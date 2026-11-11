@@ -1,0 +1,44 @@
+import 'package:flutter/material.dart';
+import 'screens/login_page.dart';
+
+void main() => runApp(const SmartStirApp());
+
+class SmartStirApp extends StatelessWidget {
+  const SmartStirApp({super.key});
+
+  static const navy = Color(0xFF1B365D);
+  static const brass = Color(0xFFC5A059);
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = ColorScheme.fromSeed(
+      seedColor: navy,
+      primary: navy,
+      secondary: brass,
+      surface: Colors.white,
+    );
+    return MaterialApp(
+      title: 'SmartStir Lab',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        useMaterial3: true,
+        scaffoldBackgroundColor: const Color(0xFFF8FAFC),
+        colorScheme: scheme,
+        appBarTheme: const AppBarTheme(backgroundColor: Colors.white),
+        inputDecorationTheme: InputDecorationTheme(
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 15),
+        ),
+        cardTheme: CardThemeData(
+          elevation: 0,
+          color: Colors.white,
+          shape: RoundedRectangleBorder(
+            side: const BorderSide(color: Color(0xFFE2E8F0)),
+            borderRadius: BorderRadius.circular(18),
+          ),
+        ),
+      ),
+      home: const LoginPage(),
+    );
+  }
+}

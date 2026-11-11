@@ -1,0 +1,27 @@
+**/secrets.h
+**/.env
+**/.env.local
+**/*.pem
+**/*.key
+**/*.p12
+**/.venv/
+**/__pycache__/
+**/.dart_tool/
+**/build/
+**/.flutter-plugins*
+**/local.db
+.idea/
+.vscode/
+.DS_Store
+
+# Android signing material / generated artifacts
+**/android/key.properties
+**/*.jks
+**/*.keystore
+**/android/local.properties
+**/.gradle/
+**/*.apk
+**/*.aab
+**/*.sha1
+**/dist/
+**/.pub-cache/

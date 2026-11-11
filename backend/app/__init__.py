@@ -1,0 +1,1 @@
+"""SmartStir backend package."""

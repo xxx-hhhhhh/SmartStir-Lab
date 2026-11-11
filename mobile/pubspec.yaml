@@ -1,0 +1,17 @@
+name: smartstir_lab
+version: 1.2.0+3
+description: SmartStir Lab authenticated Android MQTT remote control prototype
+publish_to: none
+
+environment:
+  sdk: '>=3.5.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.3.0
+  package_info_plus: ^8.1.2
+  url_launcher: ^6.3.1
+
+flutter:
+  uses-material-design: true

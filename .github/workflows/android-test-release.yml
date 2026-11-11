@@ -1,0 +1,79 @@
+name: Android test APK and GitHub Release
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v4
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.9'
+          channel: stable
+          cache: true
+      - name: Generate Android platform skeleton
+        working-directory: mobile
+        run: flutter create --org com.smartstir --project-name smartstir_lab --platforms=android .
+      - name: Add Android internet permission
+        working-directory: mobile
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('android/app/src/main/AndroidManifest.xml')
+          s = p.read_text()
+          if 'android.permission.INTERNET' not in s:
+              s = s.replace('<application', '<uses-permission android:name="android.permission.INTERNET" />\n    <application', 1)
+              p.write_text(s)
+          PY
+      - name: Resolve Flutter dependencies
+        working-directory: mobile
+        run: flutter pub get
+      - name: Analyze Flutter source
+        working-directory: mobile
+        run: flutter analyze
+      - name: Run Flutter tests
+        working-directory: mobile
+        run: flutter test
+      - name: Build debug APK (test only)
+        working-directory: mobile
+        run: flutter build apk --debug
+      - name: Stage APK and SHA-256
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp mobile/build/app/outputs/flutter-apk/app-debug.apk dist/SmartStir-Lab-v1.2.0-test.apk
+          (cd dist && sha256sum SmartStir-Lab-v1.2.0-test.apk > SHA256SUMS.txt)
+      - name: Upload CI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SmartStir-Lab-v1.2.0-test
+          path: |
+            dist/SmartStir-Lab-v1.2.0-test.apk
+            dist/SHA256SUMS.txt
+      - name: Publish initial public test Release (once)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if ! gh release view v1.2.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create v1.2.0 dist/SmartStir-Lab-v1.2.0-test.apk dist/SHA256SUMS.txt \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title 'SmartStir Lab v1.2.0 · Android 测试版' \
+              --notes '首个公开 Android 测试 APK：支持 GitHub 检查更新、独立 APP 登录、MQTT 网关控制、无 GPIO32 许可开关。Debug 签名，仅供有人现场监护的开发测试。下载后由 Android 系统手动确认安装。后续使用其他签名的 APK 可能需要先卸载此测试版。'
+          else
+            echo 'Release v1.2.0 exists; not overwriting published assets.'
+          fi
