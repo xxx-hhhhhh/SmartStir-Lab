@@ -112,10 +112,12 @@ class _WorkspacePageState extends State<WorkspacePage> {
         setState(() => _actionInfo = '$command 指令未确认：$e');
       }
     } finally {
-      if (mounted) setState(() {
-        _pendingOperations--;
-        if (command == 'STOP') _stopPending = false;
-      });
+      if (mounted) {
+        setState(() {
+          _pendingOperations--;
+          if (command == 'STOP') _stopPending = false;
+        });
+      }
     }
   }
 
