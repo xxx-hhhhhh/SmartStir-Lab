@@ -26,6 +26,9 @@ jobs:
       - name: Generate Android platform skeleton
         working-directory: mobile
         run: flutter create --org com.smartstir --project-name smartstir_lab --platforms=android .
+      - name: Remove generated Flutter counter example test
+        working-directory: mobile
+        run: rm -f test/widget_test.dart
       - name: Add Android internet permission
         working-directory: mobile
         shell: bash
