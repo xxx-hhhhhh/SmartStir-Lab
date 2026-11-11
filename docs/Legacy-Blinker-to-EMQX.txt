@@ -1,0 +1,34 @@
+SmartStir Lab - ESP32 EMQX 固件 v1.2.1
+======================================
+原程序来自用户上传的 BT6612_copy_20261016171632.rar。
+已保留旧程序引脚：STBY=4、AIN1=5、AIN2=18、PWMA=19、霍尔GPIO27、OLED SDA21/SCL22、20kHz/8bit PWM。
+已移除 Blinker；改为通过 MQTT TLS 8883 直接连接 EMQX Cloud。
+ESP32账号：stirrer-001；Railway使用的是另一个账号 smartstir-backend。
+当前默认关闭霍尔与OLED扩展：SMARTSTIR_USE_HALL=0、SMARTSTIR_USE_OLED=0。
+只有确认真机已安装、接线正确、霍尔信号不高于3.3V后才能将相应宏改为1。
+
+安装步骤：
+1. 将压缩包解压，整个 SmartStir 文件夹保留在一起。
+2. 将 SmartStir/secrets.h.example 复制为 SmartStir/secrets.h。
+3. 在 secrets.h 中，本地填写 WIFI_SSID、WIFI_PASSWORD，以及 EMQX 客户端认证 stirrer-001 的 MQTT_PASSWORD。
+   MQTT_HOST、MQTT_PORT=8883、MQTT_USER、CA证书已在模板内；不要填写 Blinker auth，不能用 Railway 的 smartstir-backend 密码替代。
+4. 使用 Arduino IDE，安装 ESP32 board package、PubSubClient、ArduinoJson 7.x；开启 OLED 时另安装 Adafruit GFX、Adafruit SSD1306。
+5. 板子选 ESP32 Dev Module；确认 COM 口，断开电机12V供电后先上传。
+6. 打开 115200 波特率串口监视器：联网且订阅请求已发送时会出现 “MQTT TLS online; subscribe request sent”。
+7. 在 APP 中登录 https://smartstir-gateway-production.up.railway.app；看到设备在线后，再由现场人员进行安全空载测试。
+8. 命令顺序：先 SET_PWM 设置非零 PWM，例如30%，再 START，最后 STOP。仅设置滑块不会自动启动（这是相对旧 Blinker 代码的有意改变）。
+
+硬件接线（与之前确认的一致）：
+ TB6612: STBY->GPIO4; AIN1->GPIO5; AIN2->GPIO18; PWMA->GPIO19;
+ VCC->ESP32 3V3; GND->ESP32 GND与12V电源负极共地;
+ VM->12V电源正极; AO1/AO2->电机两线。
+ 可选霍尔: OUT->GPIO27; 电源/输出电平必须与 ESP32 3.3V 输入兼容。
+ 可选OLED: SDA->GPIO21, SCL->GPIO22, I2C地址0x3C。
+ GPIO32不用接，继电器不用接；仍应有可以直接切断电机12V电源的物理开关。
+
+重要：
+ - 原文件里出现的 Blinker 授权密钥、Wi-Fi 密码不写入公开仓库。密钥应在本地填写，泄露过的请更换。
+ - 旧程序的霍尔测量默认每转1脉冲，但需根据实际磁铁与安装方式校准。
+ - 没有霍尔输入时，actual_rpm=null；PWM%不能冒充实测RPM。
+ - 防重放、断线停机、默认上电停止、最长连续运行180秒是软件防护，不能替代物理断电。
+ - 这是一份源码修订；未在你的ESP32硬件上编译、烧录或实测。

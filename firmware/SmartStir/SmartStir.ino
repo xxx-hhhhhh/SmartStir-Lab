@@ -1,11 +1,17 @@
 /*
-  SmartStir Lab V1: ESP32 DevKit V1 + TB6612FNG + EMQX Cloud MQTTS
-  IMPORTANT: V1 does not measure actual RPM. PWM percentage is not RPM.
-  This variant does NOT use GPIO32 or a local ARM permission switch.
-  IMPORTANT: Keep an independent, physical 12V motor-power cutoff; never run unattended.
-  Remote START still requires valid MQTT, time window, and a nonzero PWM setting.
-  Install Arduino libraries: PubSubClient, ArduinoJson, ESP32 board package.
-*/
+ * SmartStir Lab ESP32 firmware v1.2.1
+ * Adapted from the user's legacy TB6612 + Blinker + Hall + OLED sketch.
+ *
+ * Preserved: STBY=4, AIN1=5, AIN2=18, PWMA=19, 20kHz/8-bit PWM;
+ *            optional Hall GPIO27 (1 pulse/rev) and OLED I2C SDA21/SCL22 (0x3C).
+ * Replaced: Blinker -> secure MQTT via EMQX Cloud (stirrer-001).
+ * Not used: GPIO32. No relay required.
+ *
+ * IMPORTANT: This prototype is not intended for unattended use.
+ * Use a physical motor 12V power cut-off; first test with motor power OFF.
+ * actual_rpm is null until a real 3.3V-safe Hall input is connected and enabled.
+ */
+#include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <PubSubClient.h>
@@ -13,11 +19,49 @@
 #include <time.h>
 #include "secrets.h"
 
+// Change to 1 ONLY when the corresponding accessory is actually wired.
+// If Hall is absent, the app must NOT display PWM% as measured RPM.
+#define SMARTSTIR_USE_HALL 0
+#define SMARTSTIR_USE_OLED 0
+
+#if SMARTSTIR_USE_OLED
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#define OLED_SDA 21
+#define OLED_SCL 22
+#define OLED_ADDRESS 0x3C
+Adafruit_SSD1306 display(128, 64, &Wire, -1);
+bool oledAvailable = false;
+unsigned long lastOledMs = 0;
+#endif
+
+#if SMARTSTIR_USE_HALL
+#define HALL_PIN 27
+const uint8_t PULSES_PER_REV = 1;   // Legacy sketch: one pulse per rotation
+volatile uint32_t hallPulseCount = 0;
+volatile uint32_t lastHallPulseUs = 0;
+float actualRpm = 0.0f;
+bool hallMeasurementReady = false;
+unsigned long lastMeasureMs = 0;
+void IRAM_ATTR hallSensorISR() {
+  const uint32_t now = micros();
+  // Reject very short electrical glitches; adjust if the real sensor requires it.
+  if ((uint32_t)(now - lastHallPulseUs) >= 1000U) {
+    ++hallPulseCount;
+    lastHallPulseUs = now;
+  }
+}
+#endif
+
 #define STBY 4
 #define AIN1 5
 #define AIN2 18
 #define PWMA 19
 #define PWM_CHANNEL 0
+#define PWM_FREQ 20000
+#define PWM_RES 8
+#define PWM_MAX 255
 
 #if __has_include(<esp_arduino_version.h>)
 #include <esp_arduino_version.h>
@@ -30,32 +74,36 @@ const char* TOPIC_COMMAND = "smartstir/v1/devices/stirrer-001/cmd";
 const char* TOPIC_ACK = "smartstir/v1/devices/stirrer-001/ack";
 const char* TOPIC_STATE = "smartstir/v1/devices/stirrer-001/state";
 const char* TOPIC_PRESENCE = "smartstir/v1/devices/stirrer-001/presence";
-const unsigned long MAX_RUN_MS = 180000UL;  // hard maximum: 3 minutes for V1 bench tests
+
+const unsigned long MAX_RUN_MS = 180000UL;
 const unsigned long REPORT_INTERVAL_MS = 3000UL;
 const unsigned long WIFI_RETRY_INTERVAL_MS = 8000UL;
 const unsigned long MQTT_RETRY_INTERVAL_MS = 8000UL;
 
-WiFiClientSecure network;
-PubSubClient mqtt(network);
+WiFiClientSecure tlsClient;
+PubSubClient mqtt(tlsClient);
 bool motorEnabled = false;
-uint8_t pwmPercent = 0;
+uint8_t pwmPercent = 0;            // Safe: preset starts at 0%; old sketch used 50%
 unsigned long runStartMs = 0;
 unsigned long lastReportMs = 0;
 unsigned long lastWiFiAttemptMs = 0;
 unsigned long lastMqttAttemptMs = 0;
-// Protect against repeated QoS1 deliveries. Cache the last 16 non-STOP commands.
-String recentCommandIds[16];
-uint8_t recentCursor = 0;
-bool seenCommand(const String &id) {
-  for (const auto &saved : recentCommandIds) if (saved == id) return true;
+
+// QoS1 delivery may repeat. Cache recent command IDs, including START.
+String commandCache[16];
+uint8_t cacheCursor = 0;
+bool commandSeen(const String &id) {
+  for (const auto &cached : commandCache) {
+    if (cached == id) return true;
+  }
   return false;
 }
-void rememberCommand(const String &id) {
-  recentCommandIds[recentCursor] = id;
-  recentCursor = (recentCursor + 1) % 16;
+void cacheCommand(const String &id) {
+  commandCache[cacheCursor] = id;
+  cacheCursor = (cacheCursor + 1) % 16;
 }
 
-void writePWM(uint8_t duty) {
+void setPwmRaw(uint8_t duty) {
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
   ledcWrite(PWMA, duty);
 #else
@@ -63,25 +111,83 @@ void writePWM(uint8_t duty) {
 #endif
 }
 
-void stopMotor() {
-  digitalWrite(STBY, LOW);  // disable bridge before updating PWM
-  writePWM(0);
+// Software output disable; a physical 12V cut-off remains essential.
+void motorStop() {
+  digitalWrite(STBY, LOW);
+  setPwmRaw(0);
   digitalWrite(AIN1, LOW);
   digitalWrite(AIN2, LOW);
   motorEnabled = false;
 }
 
-void startMotor() {
+void motorStart() {
   digitalWrite(AIN1, HIGH);
   digitalWrite(AIN2, LOW);
-  writePWM((uint8_t)((uint16_t)pwmPercent * 255 / 100));
+  setPwmRaw((uint8_t)((uint16_t)pwmPercent * PWM_MAX / 100));
   digitalWrite(STBY, HIGH);
-  // Never let a repeated START silently extend the hard runtime limit.
-  if (!motorEnabled) runStartMs = millis();
+  if (!motorEnabled) runStartMs = millis(); // Repeated START cannot extend timeout.
   motorEnabled = true;
 }
 
-bool clockValid() { return time(nullptr) > 1700000000; }
+#if SMARTSTIR_USE_HALL
+void calculateRpm() {
+  unsigned long nowMs = millis();
+  unsigned long elapsedMs = nowMs - lastMeasureMs;
+  if (elapsedMs < 1000UL) return;
+  noInterrupts();
+  uint32_t pulses = hallPulseCount;
+  hallPulseCount = 0;
+  interrupts();
+  if (!motorEnabled || pwmPercent == 0) {
+    actualRpm = 0.0f;
+  } else {
+    actualRpm = (float)pulses * 60000.0f /
+                ((float)PULSES_PER_REV * (float)elapsedMs);
+  }
+  hallMeasurementReady = true;
+  lastMeasureMs = nowMs;
+}
+#else
+void calculateRpm() {}
+#endif
+
+#if SMARTSTIR_USE_OLED
+void refreshOled() {
+  if (!oledAvailable) return;
+  unsigned long now = millis();
+  if (now - lastOledMs < 250UL) return;
+  lastOledMs = now;
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.println("SmartStir / EMQX");
+  display.drawLine(0, 11, 127, 11, SSD1306_WHITE);
+  display.setCursor(0, 17);
+  display.print("Motor: ");
+  display.println(motorEnabled ? "RUNNING" : "STOPPED");
+  display.setCursor(0, 31);
+  display.print("PWM: ");
+  display.print(pwmPercent);
+  display.println("%");
+  display.setCursor(0, 45);
+  display.print("RPM: ");
+#if SMARTSTIR_USE_HALL
+  if (hallMeasurementReady) display.println(actualRpm, 1);
+  else display.println("measuring...");
+#else
+  display.println("N/A");
+#endif
+  display.setCursor(0, 56);
+  display.print("Cloud: ");
+  display.println(mqtt.connected() ? "ONLINE" : "OFFLINE");
+  display.display();
+}
+#else
+void refreshOled() {}
+#endif
+
+bool validClock() { return time(nullptr) > 1700000000; }
 
 void publishState() {
   if (!mqtt.connected()) return;
@@ -89,61 +195,70 @@ void publishState() {
   doc["device_id"] = DEVICE_ID;
   doc["motor_enabled"] = motorEnabled;
   doc["pwm_percent"] = pwmPercent;
-  // Legacy API compatibility: 'armed' now means 'remote command enabled',
-  // NOT that a physical interlock is present or that a human is onsite.
+  // Existing gateway expects armed. This is a LEGACY compatibility flag,
+  // not a real safety-interlock switch or on-site permission.
   doc["armed"] = true;
   doc["local_arm_required"] = false;
-  doc["actual_rpm"] = nullptr; // no Hall sensor installed in current firmware
+  doc["hall_sensor_configured"] = (bool)SMARTSTIR_USE_HALL;
+  doc["oled_configured"] = (bool)SMARTSTIR_USE_OLED;
+#if SMARTSTIR_USE_HALL
+  if (hallMeasurementReady) doc["actual_rpm"] = actualRpm;
+  else doc["actual_rpm"] = nullptr;
+#else
+  doc["actual_rpm"] = nullptr;
+#endif
   doc["uptime_ms"] = millis();
   doc["fault"] = nullptr;
-  char buffer[320];
-  serializeJson(doc, buffer, sizeof(buffer));
-  mqtt.publish(TOPIC_STATE, buffer, true);
+  char json[420];
+  size_t n = serializeJson(doc, json, sizeof(json));
+  if (n > 0 && n < sizeof(json) - 1) mqtt.publish(TOPIC_STATE, json, true);
 }
 
-void publishAck(const char* commandId, const char* status, const char* errorCode = nullptr) {
+void publishAck(const char *id, const char *status, const char *error = nullptr) {
   if (!mqtt.connected()) return;
   JsonDocument doc;
-  doc["command_id"] = commandId;
+  doc["command_id"] = id;
   doc["status"] = status;
   doc["applied_pwm_percent"] = pwmPercent;
   doc["motor_enabled"] = motorEnabled;
-  if (errorCode) doc["error_code"] = errorCode;
+  if (error) doc["error_code"] = error;
   else doc["error_code"] = nullptr;
-  char buffer[320];
-  serializeJson(doc, buffer, sizeof(buffer));
-  mqtt.publish(TOPIC_ACK, buffer, false);
+  char json[360];
+  size_t n = serializeJson(doc, json, sizeof(json));
+  if (n > 0 && n < sizeof(json) - 1) mqtt.publish(TOPIC_ACK, json, false);
 }
 
-void onMqtt(char* topic, byte* payload, unsigned int length) {
+void handleMqtt(char* topic, byte* payload, unsigned int length) {
   if (strcmp(topic, TOPIC_COMMAND) != 0 || length > 512) return;
   JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, payload, length);
-  if (err) return;
+  if (deserializeJson(doc, payload, length)) return;
   String id = doc["command_id"] | "";
   String command = doc["command"] | "";
   long issued = doc["issued_at"] | 0L;
   long expires = doc["expires_at"] | 0L;
-  if (id.length() == 0 || id.length() > 72) return;
+  if (id.isEmpty() || id.length() > 72) return;
 
-  // STOP is always safe to apply, even if a time sync issue occurred.
+  // STOP can always be applied, even before time synchronization.
   if (command == "STOP") {
-    stopMotor();
+    motorStop();
     publishAck(id.c_str(), "APPLIED");
     publishState();
+    Serial.println("MQTT command: STOP");
     return;
   }
+
   time_t now = time(nullptr);
-  if (!clockValid() || issued <= 0 || expires <= issued ||
+  if (!validClock() || issued <= 0 || expires <= issued ||
       now < issued - 3 || now > expires || expires - issued > 15) {
     publishAck(id.c_str(), "REJECTED", "INVALID_OR_EXPIRED_TIME");
     return;
   }
-  if (seenCommand(id)) {
+  if (commandSeen(id)) {
     publishAck(id.c_str(), "DUPLICATE", "ALREADY_HANDLED");
     return;
   }
-  rememberCommand(id);
+  cacheCommand(id);
+
   if (command == "SET_PWM") {
     if (!doc["value"].is<int>()) {
       publishAck(id.c_str(), "REJECTED", "INVALID_VALUE");
@@ -155,25 +270,27 @@ void onMqtt(char* topic, byte* payload, unsigned int length) {
       return;
     }
     pwmPercent = (uint8_t)value;
-    if (value == 0) stopMotor();
-    else if (motorEnabled) writePWM((uint8_t)((uint16_t)value * 255 / 100));
+    if (value == 0) motorStop();
+    else if (motorEnabled) setPwmRaw((uint8_t)((uint16_t)value * PWM_MAX / 100));
     publishAck(id.c_str(), "APPLIED");
     publishState();
+    Serial.printf("MQTT command: SET_PWM %u%%\n", pwmPercent);
   } else if (command == "START") {
     if (pwmPercent == 0 || !mqtt.connected() || WiFi.status() != WL_CONNECTED) {
       publishAck(id.c_str(), "REJECTED", "PWM_ZERO_OR_NOT_CONNECTED");
       return;
     }
-    startMotor();
+    motorStart();
     publishAck(id.c_str(), "APPLIED");
     publishState();
+    Serial.printf("MQTT command: START at PWM %u%%\n", pwmPercent);
   } else {
     publishAck(id.c_str(), "REJECTED", "UNKNOWN_COMMAND");
   }
 }
 
 void setup() {
-  // First action is hardware shutdown, independent of network / cloud.
+  // Disable motor bridge first, BEFORE Wi-Fi or MQTT setup.
   pinMode(STBY, OUTPUT);
   digitalWrite(STBY, LOW);
   pinMode(AIN1, OUTPUT);
@@ -181,66 +298,91 @@ void setup() {
   pinMode(PWMA, OUTPUT);
   digitalWrite(AIN1, LOW);
   digitalWrite(AIN2, LOW);
+  Serial.begin(115200);
+
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
-  ledcAttach(PWMA, 20000, 8);
+  if (!ledcAttach(PWMA, PWM_FREQ, PWM_RES)) {
+    Serial.println("ERROR: PWM init failed; motor disabled");
+    while (true) { digitalWrite(STBY, LOW); delay(1000); }
+  }
 #else
-  ledcSetup(PWM_CHANNEL, 20000, 8);
+  if (ledcSetup(PWM_CHANNEL, PWM_FREQ, PWM_RES) <= 0) {
+    Serial.println("ERROR: PWM init failed; motor disabled");
+    while (true) { digitalWrite(STBY, LOW); delay(1000); }
+  }
   ledcAttachPin(PWMA, PWM_CHANNEL);
 #endif
-  stopMotor();
-  Serial.begin(115200);
-  delay(250);
+  motorStop();
+
+#if SMARTSTIR_USE_HALL
+  pinMode(HALL_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(HALL_PIN), hallSensorISR, FALLING);
+  lastMeasureMs = millis();
+  Serial.println("Hall sensor enabled on GPIO27 (check 3.3V logic level)");
+#endif
+#if SMARTSTIR_USE_OLED
+  Wire.begin(OLED_SDA, OLED_SCL);
+  oledAvailable = display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRESS);
+  Serial.println(oledAvailable ? "OLED online" : "OLED not found; continuing");
+#endif
+
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   configTime(0, 0, "pool.ntp.org", "time.google.com");
-  network.setCACert(MQTT_CA_PEM);
+  tlsClient.setCACert(MQTT_CA_PEM);
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
-  mqtt.setCallback(onMqtt);
+  mqtt.setCallback(handleMqtt);
   mqtt.setBufferSize(768);
   mqtt.setKeepAlive(20);
   mqtt.setSocketTimeout(5);
-  Serial.println("SmartStir ready: motor OFF; remote control without GPIO32 switch.");
+  Serial.println("SmartStir EMQX v1.2.1 ready; motor OFF; no GPIO32 switch.");
+  Serial.println("Wi-Fi connecting (ESP32 needs 2.4 GHz)...");
 }
 
 void loop() {
-  // Safety checks execute even if network is unavailable.
+  calculateRpm();
+  refreshOled();
+
   if (motorEnabled && (WiFi.status() != WL_CONNECTED ||
       !mqtt.connected() || (millis() - runStartMs > MAX_RUN_MS))) {
-    stopMotor();
-    Serial.println("FAIL-SAFE: motor stopped");
+    motorStop();
+    Serial.println("FAIL-SAFE: motor stopped due to disconnect/timeout");
   }
 
   if (WiFi.status() != WL_CONNECTED) {
     if (millis() - lastWiFiAttemptMs > WIFI_RETRY_INTERVAL_MS) {
       lastWiFiAttemptMs = millis();
       WiFi.reconnect();
+      Serial.println("Wi-Fi retrying...");
     }
     delay(5);
     return;
   }
-  if (!clockValid()) {
-    delay(10);
+  if (!validClock()) {
+    delay(10);             // TLS validation needs accurate time.
     return;
   }
   if (!mqtt.connected()) {
     if (millis() - lastMqttAttemptMs > MQTT_RETRY_INTERVAL_MS) {
       lastMqttAttemptMs = millis();
-      Serial.println("Connecting secure MQTT...");
-      // The Broker's hostname (not an IP) is necessary for SNI.
+      Serial.println("Connecting EMQX Cloud over TLS:8883...");
       bool ok = mqtt.connect(DEVICE_ID, MQTT_USER, MQTT_PASSWORD,
                              TOPIC_PRESENCE, 1, true, "offline", true);
       if (ok) {
-        mqtt.subscribe(TOPIC_COMMAND, 1);
+        bool subOk = mqtt.subscribe(TOPIC_COMMAND, 1);
         mqtt.publish(TOPIC_PRESENCE, "online", true);
         publishState();
-        Serial.println("MQTT online");
+        Serial.println(subOk ? "MQTT TLS online; subscribe request sent" :
+                   "MQTT TLS online; subscribe request failed locally");
       } else {
-        Serial.print("MQTT failed state="); Serial.println(mqtt.state());
+        Serial.print("MQTT failed state=");
+        Serial.println(mqtt.state());
       }
     }
     delay(5);
     return;
   }
+
   mqtt.loop();
   if (millis() - lastReportMs > REPORT_INTERVAL_MS) {
     lastReportMs = millis();
