@@ -56,6 +56,8 @@ class L {
     'create_lab': {'zh':'创建实验室', 'en':'Create laboratory', 'ja':'実験室を作成'},
     'lab_name': {'zh':'实验室名称', 'en':'Laboratory name', 'ja':'実験室名'},
     'no_labs': {'zh':'还没有实验室，先创建一个吧', 'en':'Create your first laboratory', 'ja':'まず実験室を作成してください'},
+    'legacy_label': {'zh':'旧版', 'en':'Legacy', 'ja':'旧バージョン'},
+    'legacy_gateway': {'zh':'当前连接的是 V1.2 网关。仍可控制已有的 stirrer-001；注册、创建实验室和邀请功能需要部署 V1.3 新网关。', 'en':'Connected to the V1.2 gateway. Existing stirrer-001 controls remain available; registration and labs require V1.3 backend.', 'ja':'V1.2ゲートウェイに接続中。既存のstirrer-001は操作できます。登録・実験室機能にはV1.3サーバーが必要です。'},
     'devices': {'zh':'实验设备', 'en':'Devices', 'ja':'デバイス'},
     'add_device': {'zh':'添加 ESP32', 'en':'Add ESP32', 'ja':'ESP32を追加'},
     'device_id': {'zh':'ESP32 设备编号', 'en':'ESP32 device ID', 'ja':'ESP32デバイスID'},
