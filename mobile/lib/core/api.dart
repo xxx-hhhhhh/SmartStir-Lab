@@ -176,6 +176,45 @@ class SmartStirApi {
   Future<Map<String, dynamic>> commandStatus(String id) =>
       _request('GET', '/api/v1/devices/${Uri.encodeComponent(deviceId)}/commands/$id');
 
+
+  Future<List<Map<String,dynamic>>> experimentRuns() =>
+      _getList('/api/v1/devices/${Uri.encodeComponent(deviceId)}/runs');
+
+  Future<List<int>> experimentCsv(String runId) async {
+    if (!RegExp(r'^[0-9a-f-]{36}
+    try {
+      final r = await _client.get(Uri.parse('$baseUrl/api/v1/devices/${Uri.encodeComponent(deviceId)}/events'),
+        headers: {'Authorization': 'Bearer $token'}).timeout(const Duration(seconds: 10));
+      if (r.statusCode != 200) {
+        throw ApiError(_extractError(_decodeMap(r), r.statusCode), r.statusCode);
+      }
+      final raw = jsonDecode(utf8.decode(r.bodyBytes));
+      if (raw is! List) throw ApiError('事件数据格式不正确');
+      return raw.map((v) => Map<String, dynamic>.from(v as Map)).toList();
+    } on TimeoutException {
+      throw ApiError('事件查询超时');
+    }
+  }
+}
+, caseSensitive: false).hasMatch(runId)) {
+      throw ApiError('Invalid experiment ID');
+    }
+    try {
+      final uri = Uri.parse('$baseUrl/api/v1/devices/${Uri.encodeComponent(deviceId)}/runs/$runId.csv');
+      final r = await _client.get(uri,headers:{'Authorization':'Bearer $token'})
+          .timeout(const Duration(seconds:25));
+      if(r.statusCode!=200) {
+        throw ApiError(_extractError(_decodeMap(r),r.statusCode),r.statusCode);
+      }
+      if(!(r.headers['content-type']??'').contains('text/csv')){
+        throw ApiError('Invalid CSV content type');
+      }
+      return r.bodyBytes;
+    } on TimeoutException {
+      throw ApiError('CSV download timed out');
+    }
+  }
+
   Future<List<Map<String, dynamic>>> events() async {
     try {
       final r = await _client.get(Uri.parse('$baseUrl/api/v1/devices/${Uri.encodeComponent(deviceId)}/events'),
