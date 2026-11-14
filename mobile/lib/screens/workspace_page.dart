@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
-import 'package:cross_file/cross_file.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:flutter/material.dart';
 import '../core/api.dart';
@@ -155,7 +154,7 @@ class _WorkspacePageState extends State<WorkspacePage> {
                 label:Text(_exportingRunId==id
                     ?L.t('exporting_csv'):L.t('export_csv')),
               )),
-          ]))));
+          ])));
       }),
     ]),
   );
