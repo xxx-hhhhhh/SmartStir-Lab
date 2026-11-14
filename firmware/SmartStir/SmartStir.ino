@@ -1,10 +1,10 @@
 /*
- * SmartStir Lab ESP32 firmware v1.2.1
+ * SmartStir Lab ESP32 firmware v1.3.0
  * Adapted from the user's legacy TB6612 + Blinker + Hall + OLED sketch.
  *
  * Preserved: STBY=4, AIN1=5, AIN2=18, PWMA=19, 20kHz/8-bit PWM;
  *            optional Hall GPIO27 (1 pulse/rev) and OLED I2C SDA21/SCL22 (0x3C).
- * Replaced: Blinker -> secure MQTT via EMQX Cloud (stirrer-001).
+ * Replaced: Blinker -> secure MQTT via EMQX Cloud (per-device MQTT identity).
  * Not used: GPIO32. No relay required.
  *
  * IMPORTANT: This prototype is not intended for unattended use.
@@ -69,11 +69,21 @@ void IRAM_ATTR hallSensorISR() {
 #define ESP_ARDUINO_VERSION_MAJOR 2
 #endif
 
-const char* DEVICE_ID = "stirrer-001";
-const char* TOPIC_COMMAND = "smartstir/v1/devices/stirrer-001/cmd";
-const char* TOPIC_ACK = "smartstir/v1/devices/stirrer-001/ack";
-const char* TOPIC_STATE = "smartstir/v1/devices/stirrer-001/state";
-const char* TOPIC_PRESENCE = "smartstir/v1/devices/stirrer-001/presence";
+// Each ESP32 must have its own device ID, MQTT account and private pairing code.
+// Existing local secrets.h without these options still compiles as a legacy device.
+#ifndef SMARTSTIR_DEVICE_ID
+#define SMARTSTIR_DEVICE_ID "stirrer-001"
+#endif
+#ifndef SMARTSTIR_PAIRING_CODE
+#define SMARTSTIR_PAIRING_CODE ""
+#endif
+const char* DEVICE_ID = SMARTSTIR_DEVICE_ID;
+const String TOPIC_PREFIX = String("smartstir/v1/devices/") + DEVICE_ID;
+const String TOPIC_COMMAND = TOPIC_PREFIX + "/cmd";
+const String TOPIC_ACK = TOPIC_PREFIX + "/ack";
+const String TOPIC_STATE = TOPIC_PREFIX + "/state";
+const String TOPIC_PRESENCE = TOPIC_PREFIX + "/presence";
+const String TOPIC_PAIR = TOPIC_PREFIX + "/pair";
 
 const unsigned long MAX_RUN_MS = 180000UL;
 const unsigned long REPORT_INTERVAL_MS = 3000UL;
@@ -88,6 +98,7 @@ unsigned long runStartMs = 0;
 unsigned long lastReportMs = 0;
 unsigned long lastWiFiAttemptMs = 0;
 unsigned long lastMqttAttemptMs = 0;
+unsigned long lastPairingMs = 0;
 
 // QoS1 delivery may repeat. Cache recent command IDs, including START.
 String commandCache[16];
@@ -211,7 +222,22 @@ void publishState() {
   doc["fault"] = nullptr;
   char json[420];
   size_t n = serializeJson(doc, json, sizeof(json));
-  if (n > 0 && n < sizeof(json) - 1) mqtt.publish(TOPIC_STATE, json, true);
+  if (n > 0 && n < sizeof(json) - 1) mqtt.publish(TOPIC_STATE.c_str(), json, true);
+}
+
+
+void publishPairing() {
+  if (!mqtt.connected()) return;
+  const char* code = SMARTSTIR_PAIRING_CODE;
+  size_t n = strlen(code);
+  if (n < 16 || n > 64) return; // Legacy devices do not broadcast a claim.
+  JsonDocument doc;
+  doc["device_id"] = DEVICE_ID;
+  doc["pairing_code"] = code;
+  char payload[190];
+  size_t written = serializeJson(doc, payload, sizeof(payload));
+  if (written > 0 && written < sizeof(payload) - 1)
+    mqtt.publish(TOPIC_PAIR.c_str(), payload, false);
 }
 
 void publishAck(const char *id, const char *status, const char *error = nullptr) {
@@ -225,11 +251,11 @@ void publishAck(const char *id, const char *status, const char *error = nullptr)
   else doc["error_code"] = nullptr;
   char json[360];
   size_t n = serializeJson(doc, json, sizeof(json));
-  if (n > 0 && n < sizeof(json) - 1) mqtt.publish(TOPIC_ACK, json, false);
+  if (n > 0 && n < sizeof(json) - 1) mqtt.publish(TOPIC_ACK.c_str(), json, false);
 }
 
 void handleMqtt(char* topic, byte* payload, unsigned int length) {
-  if (strcmp(topic, TOPIC_COMMAND) != 0 || length > 512) return;
+  if (strcmp(topic, TOPIC_COMMAND.c_str()) != 0 || length > 512) return;
   JsonDocument doc;
   if (deserializeJson(doc, payload, length)) return;
   String id = doc["command_id"] | "";
@@ -335,7 +361,12 @@ void setup() {
   mqtt.setBufferSize(768);
   mqtt.setKeepAlive(20);
   mqtt.setSocketTimeout(5);
-  Serial.println("SmartStir EMQX v1.2.1 ready; motor OFF; no GPIO32 switch.");
+  Serial.println("SmartStir EMQX v1.3.0 ready; motor OFF; no GPIO32 switch.");
+  Serial.print("Device ID: "); Serial.println(DEVICE_ID);
+  if (strlen(SMARTSTIR_PAIRING_CODE) >= 16) {
+    Serial.print("Pairing code (keep private): ");
+    Serial.println(SMARTSTIR_PAIRING_CODE);
+  }
   Serial.println("Wi-Fi connecting (ESP32 needs 2.4 GHz)...");
 }
 
@@ -367,11 +398,13 @@ void loop() {
       lastMqttAttemptMs = millis();
       Serial.println("Connecting EMQX Cloud over TLS:8883...");
       bool ok = mqtt.connect(DEVICE_ID, MQTT_USER, MQTT_PASSWORD,
-                             TOPIC_PRESENCE, 1, true, "offline", true);
+                             TOPIC_PRESENCE.c_str(), 1, true, "offline", true);
       if (ok) {
-        bool subOk = mqtt.subscribe(TOPIC_COMMAND, 1);
-        mqtt.publish(TOPIC_PRESENCE, "online", true);
+        bool subOk = mqtt.subscribe(TOPIC_COMMAND.c_str(), 1);
+        mqtt.publish(TOPIC_PRESENCE.c_str(), "online", true);
         publishState();
+        publishPairing();
+        lastPairingMs = millis();
         Serial.println(subOk ? "MQTT TLS online; subscribe request sent" :
                    "MQTT TLS online; subscribe request failed locally");
       } else {
@@ -384,6 +417,10 @@ void loop() {
   }
 
   mqtt.loop();
+  if (millis() - lastPairingMs > 30000UL) {
+    lastPairingMs = millis();
+    publishPairing();
+  }
   if (millis() - lastReportMs > REPORT_INTERVAL_MS) {
     lastReportMs = millis();
     publishState();
