@@ -11,7 +11,7 @@ class LoginPage extends StatefulWidget {
 }
 
 class _LoginPageState extends State<LoginPage> {
-  final _server = TextEditingController(text: 'https://smartstir-gateway-production.up.railway.app');
+  final _server = TextEditingController(text: 'https://smartstir-gateway-v13-production.up.railway.app');
   final _username = TextEditingController();
   final _password = TextEditingController();
   final _confirmation = TextEditingController();
