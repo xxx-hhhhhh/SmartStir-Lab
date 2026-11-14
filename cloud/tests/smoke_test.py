@@ -1,6 +1,9 @@
 """Integration smoke tests for SmartStir V1.3 accounts and lab ACL (test DB only)."""
+import csv
+import io
 import json
 import os
+import subprocess
 import urllib.error
 import urllib.request
 
@@ -35,6 +38,33 @@ check(200, req("/api/v1/labs", token=bob))
 check(201, req("/api/v1/labs", "POST", {"name":"Chemistry Lab"}, token=alice))
 status, labs = req("/api/v1/labs", token=alice)
 lab_id = labs[0]["id"]
+
+# Only the owner can read this device before accepting an invitation.
+run_id = subprocess.check_output(
+    ["bun", "cloud/tests/seed_csv.ts", lab_id], text=True
+).strip()
+device_path = "/api/v1/devices/stirrer-csvtest"
+check(404, req(device_path + "/runs", token=bob))
+status, runs = req(device_path + "/runs", token=alice)
+check(200, (status, runs))
+assert runs[0]["id"] == run_id and runs[0]["sample_count"] == 2, runs
+csv_request = urllib.request.Request(
+    BASE + device_path + "/runs/" + run_id + ".csv",
+    headers={"Authorization": "Bearer " + alice})
+with urllib.request.urlopen(csv_request, timeout=10) as response:
+    assert response.status == 200
+    assert response.headers.get_content_type() == "text/csv"
+    csv_bytes = response.read()
+assert csv_bytes.startswith(b"\\xef\\xbb\\xbf"), "CSV missing UTF-8 BOM"
+csv_rows = list(csv.reader(io.StringIO(csv_bytes.decode("utf-8-sig"))))
+assert csv_rows[0] == [
+    "timestamp_utc", "device_id", "motor_enabled", "pwm_percent",
+    "actual_rpm", "fault", "uptime_ms"
+], csv_rows[0]
+assert len(csv_rows) == 3 and csv_rows[1][3] == "30", csv_rows
+assert csv_rows[2][5].startswith("'=HYPERLINK"), "CSV formula not escaped"
+check(404, req(device_path + "/runs/" + run_id + ".csv", token=bob))
+
 status, other = req("/api/v1/labs", token=bob)
 assert not other, other
 check(404, req(f"/api/v1/labs/{lab_id}/invitations", "POST",
