@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'app_preferences.dart';
 
 /// GitHub Releases only. The repo must be PUBLIC to allow anonymous checking.
 /// A private source repository needs a separate public release repository.
@@ -107,7 +108,7 @@ class SmartStirUpdateService {
 
   static Future<void> showUpdateDialog(BuildContext context) async {
     final messenger = ScaffoldMessenger.of(context);
-    messenger.showSnackBar(const SnackBar(content: Text('正在检查 GitHub 新版本…'),
+    messenger.showSnackBar(SnackBar(content: Text(L.t('checking_updates')),
       duration: Duration(seconds: 2)));
     try {
       final pkg = await PackageInfo.fromPlatform();
@@ -115,34 +116,33 @@ class SmartStirUpdateService {
       if (!context.mounted) return;
       if (update == null) {
         await showDialog<void>(context: context, builder: (ctx) => AlertDialog(
-          title: const Text('已是最新版本'),
-          content: Text('当前版本：${pkg.version}\n暂未发现新的稳定版 APK。'),
+          title: Text(L.t('latest_version')),
+          content: Text('${L.t('current_version')}: ${pkg.version}\n${L.t('no_new_version')}'),
           actions: [TextButton(onPressed: () => Navigator.pop(ctx),
-            child: const Text('确定'))],
+            child: Text(L.t('submit')))],
         ));
         return;
       }
       await showDialog<void>(context: context, builder: (ctx) => AlertDialog(
-        title: const Text('发现新版本'),
+        title: Text(L.t('new_version')),
         content: SingleChildScrollView(child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text('当前 ${update.currentVersion}  →  新版 ${update.tag}',
+            Text('${L.t('current_version')} ${update.currentVersion}  →  ${update.tag}',
               style: const TextStyle(fontWeight: FontWeight.w600)),
             const SizedBox(height: 12),
-            Text(update.releaseNotes.isEmpty ? '本次发布暂无更新说明。'
+            Text(update.releaseNotes.isEmpty ? L.t('release_notes_missing')
               : update.releaseNotes, maxLines: 18,
               overflow: TextOverflow.ellipsis),
             const SizedBox(height: 14),
-            const Text('将通过系统浏览器下载 GitHub 官方 Release APK，'
-              '安装时由 Android 系统确认；不会静默安装。请确保下载来源可信。',
+            Text(L.t('update_security'),
               style: TextStyle(fontSize: 12)),
           ],
         )),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx),
-            child: const Text('稍后再说')),
+            child: Text(L.t('later'))),
           FilledButton.icon(
             onPressed: () async {
               Navigator.pop(ctx);
@@ -151,18 +151,18 @@ class SmartStirUpdateService {
                 mode: LaunchMode.externalApplication);
               if (!opened && context.mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('无法打开浏览器，请稍后重试')));
+                  SnackBar(content: Text(L.t('browser_error'))));
               }
             },
             icon: const Icon(Icons.open_in_browser),
-            label: const Text('下载并更新'),
+            label: Text(L.t('download_update')),
           ),
         ],
       ));
     } catch (error) {
       if (!context.mounted) return;
       messenger.showSnackBar(SnackBar(
-        content: Text('检查更新失败：$error'),
+        content: Text('${L.t('update_error')}: $error'),
         duration: const Duration(seconds: 6),
       ));
     }
