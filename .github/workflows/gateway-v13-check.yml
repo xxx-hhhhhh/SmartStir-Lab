@@ -1,0 +1,24 @@
+name: Gateway V1.3 source check
+on:
+  push:
+    branches: [feature/labs-users-i18n-v1.3]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  gateway:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.4'
+      - name: Parse and bundle gateway source
+        run: bun build cloud/gateway-v1.3.ts --target bun --external mqtt --external postgres --outfile /tmp/smartstir-gateway-v13.js
+      - name: Check routing endpoints are present
+        run: |
+          grep -q '/api/v1/register' cloud/gateway-v1.3.ts
+          grep -q 'device_claims' cloud/gateway-v1.3.ts
+          grep -q 'lab_invitations' cloud/gateway-v1.3.ts
