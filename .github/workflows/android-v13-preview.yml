@@ -64,7 +64,7 @@ jobs:
           path: dist/
 
       - name: Publish V1.3 GitHub prerelease
-        if: github.event_name == 'push' && github.ref == 'refs/heads/feature/labs-users-i18n-v1.3'
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/feature/labs-users-i18n-v1.3') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'feature/labs-users-i18n-v1.3')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -75,7 +75,7 @@ jobs:
               dist/SmartStir-Lab-v1.3.0-preview-debug.apk \
               dist/SHA256SUMS.txt \
               --repo "$GITHUB_REPOSITORY" \
-              --target "$GITHUB_SHA" \
+              --target "feature/labs-users-i18n-v1.3" \
               --prerelease \
               --title "SmartStir Lab V1.3.0 · 多用户实验室预览版" \
               --notes "开发预览版：新增用户注册、创建和邀请实验室、ESP32 配对、多设备控制及中英日语言设置。APP 启动确认弹窗可选；ESP32 断网/180秒保护保持。新功能需要尚未部署的 PostgreSQL + V1.3 云端网关 + EMQX 多设备 ACL，不能仅安装 APK 就完成云端功能。原 V1.2.0 正式版不变。Debug 签名，仅用于测试。"
