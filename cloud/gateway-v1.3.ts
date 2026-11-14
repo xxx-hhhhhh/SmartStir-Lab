@@ -419,7 +419,7 @@ Bun.serve({
         if(!await belongs(user.id,deviceId))return err("Device not found",404);
         if(!runId){
           await q("UPDATE experiment_runs SET ended_at=last_sample_at,end_reason='signal_lost' WHERE device_id=$1 AND ended_at IS NULL AND last_sample_at < now() - GREATEST(15, 3*sample_interval_ms/1000+5) * interval '1 second'",[deviceId]);
-          return json(await q("SELECT id,device_id,started_at,ended_at,end_reason,sample_count,last_sample_at FROM experiment_runs WHERE device_id=$1 ORDER BY started_at DESC LIMIT 50",[deviceId]));
+          return json(await q("SELECT id,device_id,started_at,ended_at,end_reason,sample_count,last_sample_at,sample_interval_ms FROM experiment_runs WHERE device_id=$1 ORDER BY started_at DESC LIMIT 50",[deviceId]));
         }
         const selected=await q("SELECT id FROM experiment_runs WHERE id=$1 AND device_id=$2",[runId,deviceId]);
         if(!selected.length)return err("Experiment not found",404);
