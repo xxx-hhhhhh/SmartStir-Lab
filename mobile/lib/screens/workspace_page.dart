@@ -188,6 +188,12 @@ class _WorkspacePageState extends State<WorkspacePage> {
                     ?r['sample_interval_ms'] as int:3000)
                 .firstOrNull??3000),
           const SizedBox(height:12),
+          if(_samples.isNotEmpty)Builder(builder:(context){
+            final latest=DateTime.tryParse(_samples.last['sampled_at'].toString());
+            final age=latest==null?null:_clock.difference(latest.toLocal()).inSeconds;
+            return Text('${L.t('latest_received')}: ${age==null?'—':age<0?0:age}s',
+              style:const TextStyle(fontSize:12,color:Color(0xFF64748B)));
+          }),
           if(_sampleError!=null)Text(_sampleError!,
             style:const TextStyle(color:Colors.red,fontSize:12)),
           Text(L.t('live_samples'),style:Theme.of(context).textTheme.titleSmall),
@@ -408,6 +414,8 @@ class _WorkspacePageState extends State<WorkspacePage> {
             const SizedBox(height:6),
             Text(L.t('sample_interval_hint'),style:const TextStyle(
               color:Color(0xFF64748B),fontSize:12)),
+            if(selectedSecs==null)Text(L.t('sample_interval_unknown'),
+              style:const TextStyle(color:Color(0xFF64748B),fontSize:12)),
             const SizedBox(height:10),
             Wrap(spacing:8,runSpacing:8,children:
               [1,3,5,10].map((sec)=>ChoiceChip(
