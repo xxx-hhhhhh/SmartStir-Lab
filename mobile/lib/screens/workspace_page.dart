@@ -104,10 +104,12 @@ class _WorkspacePageState extends State<WorkspacePage> {
         setState(()=>_action='${L.t('error')}: $e');
       }
     }finally{
-      if(mounted)setState((){
-        _pending--;
-        if(command=='STOP')_stopPending=false;
-      });
+      if(mounted){
+        setState((){
+          _pending--;
+          if(command=='STOP')_stopPending=false;
+        });
+      }
     }
   }
 
