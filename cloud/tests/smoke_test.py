@@ -55,7 +55,7 @@ with urllib.request.urlopen(csv_request, timeout=10) as response:
     assert response.status == 200
     assert response.headers.get_content_type() == "text/csv"
     csv_bytes = response.read()
-assert csv_bytes.startswith(b"\\xef\\xbb\\xbf"), "CSV missing UTF-8 BOM"
+assert csv_bytes.startswith(b"\xef\xbb\xbf"), "CSV missing UTF-8 BOM"
 csv_rows = list(csv.reader(io.StringIO(csv_bytes.decode("utf-8-sig"))))
 assert csv_rows[0] == [
     "timestamp_utc", "device_id", "motor_enabled", "pwm_percent",
