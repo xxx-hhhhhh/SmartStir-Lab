@@ -395,7 +395,7 @@ Bun.serve({
       }
 
       // A laboratory member can list and export ONLY their lab's device runs.
-      const runPath=path.match(/^\\/api\\/v1\\/devices\\/([a-z0-9-]+)\\/runs(?:\\/([0-9a-f-]{36})\\.csv)?$/i);
+      const runPath=path.match(/^\/api\/v1\/devices\/([a-z0-9-]+)\/runs(?:\/([0-9a-f-]{36})\.csv)?$/i);
       if(runPath&&method==="GET"){
         const deviceId=runPath[1],runId=runPath[2];
         if(!await belongs(user.id,deviceId))return err("Device not found",404);
@@ -412,7 +412,7 @@ Bun.serve({
           new Date(row.sampled_at).toISOString(),deviceId,row.motor_enabled,
           row.pwm_percent,row.actual_rpm,row.fault,row.uptime_ms
         ].map(csvCell).join(","));
-        const csv="\\uFEFF"+[header,...lines].join("\\r\\n")+"\\r\\n";
+        const csv="\uFEFF"+[header,...lines].join("\r\n")+"\r\n";
         return new Response(csv,{status:200,headers:{
           "content-type":"text/csv; charset=utf-8",
           "content-disposition":'attachment; filename="smartstir-'+deviceId+'-'+runId+'.csv"',
