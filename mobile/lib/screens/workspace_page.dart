@@ -95,12 +95,14 @@ class _WorkspacePageState extends State<WorkspacePage> {
           }catch(_){}
         }
       }
-      if(mounted&&generation==_generation)
+      if(mounted&&generation==_generation){
         setState(()=>_action='$command: $status${detail.isEmpty?'':' ($detail)'}');
+      }
       await _refresh();
     }catch(e){
-      if(mounted&&generation==_generation)
+      if(mounted&&generation==_generation){
         setState(()=>_action='${L.t('error')}: $e');
+      }
     }finally{
       if(mounted)setState((){
         _pending--;
