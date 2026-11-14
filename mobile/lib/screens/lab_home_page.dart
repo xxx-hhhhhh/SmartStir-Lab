@@ -79,6 +79,31 @@ class _LabHomePageState extends State<LabHomePage> {
     await _perform(()async{await widget.api.inviteMember(labId,username);});
   }
 
+
+  Future<void> _showMembers(String labId) async {
+    try {
+      final rows=await widget.api.labMembers(labId);
+      if(!mounted)return;
+      await showModalBottomSheet<void>(context:context,showDragHandle:true,
+        builder:(ctx)=>SafeArea(child:Padding(
+          padding:const EdgeInsets.all(20),child:Column(
+            mainAxisSize:MainAxisSize.min,
+            crossAxisAlignment:CrossAxisAlignment.stretch,children:[
+              Text(L.t('members'),style:Theme.of(ctx).textTheme.titleLarge),
+              const SizedBox(height:12),
+              ...rows.map((row)=>ListTile(
+                leading:Icon(row['role']=='owner'?Icons.stars:Icons.person_outline),
+                title:Text((row['username']??'').toString()),
+                subtitle:Text(L.t(row['role']=='owner'?'owner':'member')),
+              )),
+            ]))));
+    }catch(e){
+      if(mounted){
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(e.toString())));
+      }
+    }
+  }
+
   Future<void> _addDevice(String labId) async {
     String id='',label='',code='';
     final data=await showDialog<Map<String,String>>(context:context,builder:(ctx)=>AlertDialog(
@@ -179,11 +204,15 @@ class _LabHomePageState extends State<LabHomePage> {
                   ]),
                   const SizedBox(height:8),
                   Row(children:[
-                    Text('${L.t('devices')}: ${devs.length}'),
-                    const Spacer(),
-                    if(role=='owner')TextButton.icon(
+                    Expanded(child:Text('${L.t('devices')}: ${devs.length}')),
+                    TextButton.icon(
+                      icon:const Icon(Icons.group_outlined,size:18),
+                      onPressed:()=>_showMembers(labId),
+                      label:Text(L.t('members'))),
+                    if(role=='owner')IconButton(
+                      tooltip:L.t('invite'),
                       icon:const Icon(Icons.person_add_alt_1),
-                      onPressed:()=>_invite(labId),label:Text(L.t('invite'))),
+                      onPressed:()=>_invite(labId)),
                   ]),
                   const Divider(),
                   if(devs.isEmpty)Padding(padding:const EdgeInsets.all(12),
