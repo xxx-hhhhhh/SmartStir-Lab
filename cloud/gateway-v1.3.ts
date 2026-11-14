@@ -25,6 +25,8 @@ const json = (obj, status = 200) => new Response(JSON.stringify(obj), {
 const err = (message, code = 400) => json({detail:message}, code);
 const validUser = value => /^[a-zA-Z0-9_]{3,24}$/.test(value);
 const validDevice = value => /^[a-z0-9][a-z0-9-]{2,39}$/.test(value);
+const allowedSampleMs = new Set([1000,3000,5000,10000]);
+const sampleInterval = raw => allowedSampleMs.has(raw)?raw:3000;
 const failures = new Map();
 const states = new Map();
 const MQTT_PREFIX = "smartstir/v1/devices/";
@@ -42,6 +44,7 @@ async function initDb() {
   await q("CREATE TABLE IF NOT EXISTS experiment_runs (id UUID PRIMARY KEY, device_id TEXT NOT NULL REFERENCES devices(device_id), started_at TIMESTAMPTZ NOT NULL DEFAULT now(), ended_at TIMESTAMPTZ, end_reason TEXT, last_sample_at TIMESTAMPTZ NOT NULL DEFAULT now(), sample_count INTEGER NOT NULL DEFAULT 0)");
   await q("CREATE UNIQUE INDEX IF NOT EXISTS idx_experiment_one_active ON experiment_runs(device_id) WHERE ended_at IS NULL");
   await q("CREATE INDEX IF NOT EXISTS idx_experiment_device_recent ON experiment_runs(device_id, started_at DESC)");
+  await q("ALTER TABLE experiment_runs ADD COLUMN IF NOT EXISTS sample_interval_ms INTEGER NOT NULL DEFAULT 3000");
   await q("CREATE TABLE IF NOT EXISTS experiment_samples (id BIGSERIAL PRIMARY KEY, run_id UUID NOT NULL REFERENCES experiment_runs(id) ON DELETE CASCADE, sampled_at TIMESTAMPTZ NOT NULL DEFAULT now(), motor_enabled BOOLEAN NOT NULL, pwm_percent INTEGER, actual_rpm DOUBLE PRECISION, fault TEXT, uptime_ms BIGINT)");
   await q("CREATE INDEX IF NOT EXISTS idx_experiment_samples_run ON experiment_samples(run_id, id)");
 
@@ -116,12 +119,14 @@ async function belongs(userId,deviceId) {
 
 function currentState(deviceId) {
   const s=states.get(deviceId);
+  const ttl = Math.max(12, Math.ceil(3*sampleInterval(s?.sample_interval_ms)/1000)+5);
   const alive=!!(mqttOnline && s && s.lastSeen && s.lastStateAt &&
-    now()-s.lastSeen<=12 && now()-s.lastStateAt<=12);
+    now()-s.lastSeen<=ttl && now()-s.lastStateAt<=ttl);
   return {device_id:deviceId,online:alive,last_seen:s?.lastSeen??null,
     last_state_at:s?.lastStateAt??null,
     motor_enabled:alive?s.motor_enabled:null,pwm_percent:s?.pwm_percent??0,
     actual_rpm:alive?s.actual_rpm:null,armed:alive?!!s.armed:false,
+    sample_interval_ms:s?.sample_interval_ms??null,
     fault:s?.fault??null};
 }
 
@@ -138,16 +143,18 @@ async function recordExperimentState(deviceId, state) {
   if(typeof state.motor_enabled!=="boolean")return;
   const known=await q("SELECT 1 FROM devices WHERE device_id=$1",[deviceId]);
   if(!known.length)return;
-  let active=(await q("SELECT id,last_sample_at FROM experiment_runs WHERE device_id=$1 AND ended_at IS NULL LIMIT 1",[deviceId]))[0];
-  if(active && Date.now()-new Date(active.last_sample_at).getTime()>15000) {
+  let active=(await q("SELECT id,last_sample_at,sample_interval_ms FROM experiment_runs WHERE device_id=$1 AND ended_at IS NULL LIMIT 1",[deviceId]))[0];
+  if(active && Date.now()-new Date(active.last_sample_at).getTime() >
+      Math.max(15000, 3*sampleInterval(active.sample_interval_ms)+5000)) {
     await q("UPDATE experiment_runs SET ended_at=last_sample_at,end_reason='signal_lost' WHERE id=$1 AND ended_at IS NULL",[active.id]);
     active=null;
   }
   const running=state.motor_enabled;
+  const intervalMs=sampleInterval(state.sample_interval_ms);
   if(!active&&!running)return;
   if(!active){
-    await q("INSERT INTO experiment_runs(id,device_id) VALUES($1,$2) ON CONFLICT DO NOTHING",
-      [randomUUID(),deviceId]);
+    await q("INSERT INTO experiment_runs(id,device_id,sample_interval_ms) VALUES($1,$2,$3) ON CONFLICT DO NOTHING",
+      [randomUUID(),deviceId,intervalMs]);
     active=(await q("SELECT id FROM experiment_runs WHERE device_id=$1 AND ended_at IS NULL LIMIT 1",[deviceId]))[0];
     if(!active)return;
   }
@@ -158,7 +165,7 @@ async function recordExperimentState(deviceId, state) {
   await q("INSERT INTO experiment_samples(run_id,motor_enabled,pwm_percent,actual_rpm,fault,uptime_ms) VALUES($1,$2,$3,$4,$5,$6)",
     [active.id,running,pwm,rpm,fault,uptime]);
   if(running){
-    await q("UPDATE experiment_runs SET last_sample_at=now(),sample_count=sample_count+1 WHERE id=$1 AND ended_at IS NULL",[active.id]);
+    await q("UPDATE experiment_runs SET last_sample_at=now(),sample_count=sample_count+1,sample_interval_ms=$2 WHERE id=$1 AND ended_at IS NULL",[active.id,intervalMs]);
   }else{
     await q("UPDATE experiment_runs SET last_sample_at=now(),sample_count=sample_count+1,ended_at=now(),end_reason=$2 WHERE id=$1 AND ended_at IS NULL",[active.id,fault?"fault":"stopped"]);
   }
@@ -242,7 +249,7 @@ async function handleMqtt(topic,payload,retained=false) {
   }
   if(kind==="state"){
     const s=states.get(deviceId)||{};
-    for(const key of ["motor_enabled","pwm_percent","actual_rpm","armed","fault"])
+    for(const key of ["motor_enabled","pwm_percent","actual_rpm","armed","fault","sample_interval_ms"])
       if(Object.prototype.hasOwnProperty.call(obj,key))s[key]=obj[key];
     s.lastSeen=now();s.lastStateAt=now();
     states.set(deviceId,s);
@@ -411,7 +418,7 @@ Bun.serve({
         const deviceId=runPath[1],runId=runPath[2];
         if(!await belongs(user.id,deviceId))return err("Device not found",404);
         if(!runId){
-          await q("UPDATE experiment_runs SET ended_at=last_sample_at,end_reason='signal_lost' WHERE device_id=$1 AND ended_at IS NULL AND last_sample_at < now() - interval '15 seconds'",[deviceId]);
+          await q("UPDATE experiment_runs SET ended_at=last_sample_at,end_reason='signal_lost' WHERE device_id=$1 AND ended_at IS NULL AND last_sample_at < now() - GREATEST(15, 3*sample_interval_ms/1000+5) * interval '1 second'",[deviceId]);
           return json(await q("SELECT id,device_id,started_at,ended_at,end_reason,sample_count,last_sample_at FROM experiment_runs WHERE device_id=$1 ORDER BY started_at DESC LIMIT 50",[deviceId]));
         }
         const selected=await q("SELECT id FROM experiment_runs WHERE id=$1 AND device_id=$2",[runId,deviceId]);
@@ -447,17 +454,19 @@ Bun.serve({
         }
         if(kind==="commands"&&!commandId&&method==="POST"){
           const d=await body(req),command=String(d.command||"");
-          if(!["START","STOP","SET_PWM"].includes(command))return err("Invalid command",422);
+          if(!["START","STOP","SET_PWM","SET_SAMPLE_INTERVAL"].includes(command))return err("Invalid command",422);
           if(command==="SET_PWM" && (!Number.isInteger(d.value)||d.value<0||d.value>100))
             return err("PWM must be an integer 0..100",422);
-          if(command!=="SET_PWM"&&d.value!=null)return err("Unexpected value",422);
+          if(command==="SET_SAMPLE_INTERVAL" && (![1,3,5,10].includes(d.value) || !Number.isInteger(d.value)))
+            return err("Sampling interval must be 1, 3, 5 or 10 seconds",422);
+          if(!["SET_PWM","SET_SAMPLE_INTERVAL"].includes(command)&&d.value!=null)return err("Unexpected value",422);
           if(!mqttOnline||!client)return err("MQTT service offline",503);
           if(command!=="STOP"&&!currentState(deviceId).online)return err("Device offline",409);
           const id=randomUUID(),time=now();
           await q("INSERT INTO commands(command_id,device_id,user_id,command,value,status,created_at) VALUES($1,$2,$3,$4,$5,'PENDING',$6)",
-            [id,deviceId,user.id,command,command==="SET_PWM"?d.value:null,time]);
+            [id,deviceId,user.id,command,["SET_PWM","SET_SAMPLE_INTERVAL"].includes(command)?d.value:null,time]);
           const packet={version:1,command_id:id,command,issued_at:time,expires_at:time+5};
-          if(command==="SET_PWM")packet.value=d.value;
+          if(["SET_PWM","SET_SAMPLE_INTERVAL"].includes(command))packet.value=d.value;
           try {
             await new Promise((resolve,reject)=>client.publish(
               MQTT_PREFIX+deviceId+"/cmd",JSON.stringify(packet),
