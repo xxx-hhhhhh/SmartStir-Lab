@@ -8,6 +8,7 @@ import '../core/app_preferences.dart';
 import '../core/github_update_service.dart';
 import 'app_settings_page.dart';
 import 'login_page.dart';
+import '../widgets/telemetry_chart.dart';
 
 class WorkspacePage extends StatefulWidget {
   const WorkspacePage({super.key,required this.api});
@@ -26,6 +27,12 @@ class _WorkspacePageState extends State<WorkspacePage> {
   Map<String,dynamic>? _device;
   List<Map<String,dynamic>> _events=[];
   List<Map<String,dynamic>> _runs=[];
+  List<Map<String,dynamic>> _samples=[];
+  String? _selectedRunId;
+  String? _sampleError;
+  bool _loadingSamples=false;
+  int _tick=0;
+  DateTime _clock=DateTime.now();
   bool _loadingRuns=false;
   String? _exportingRunId;
   double _pwm=30;
@@ -37,7 +44,16 @@ class _WorkspacePageState extends State<WorkspacePage> {
   @override
   void initState(){
     super.initState();_refresh();
-    _timer=Timer.periodic(const Duration(seconds:3),(_)=>_refresh());
+    _timer=Timer.periodic(const Duration(seconds:1),(_){
+      if(!mounted)return;
+      final tick=++_tick;
+      setState(()=>_clock=DateTime.now()); // clock refresh is not a fabricated sample
+      if(_tab==0)_refresh();
+      if(_tab==1){
+        _refreshSamples();
+        if(tick%3==0)_refreshRuns();
+      }
+    });
   }
   @override
   void dispose(){_timer?.cancel();widget.api.close();super.dispose();}
@@ -68,7 +84,16 @@ class _WorkspacePageState extends State<WorkspacePage> {
     setState(()=>_loadingRuns=true);
     try{
       final records=await widget.api.experimentRuns();
-      if(mounted)setState(()=>_runs=records);
+      if(mounted){
+        final previous=_selectedRunId;
+        setState((){
+          _runs=records;
+          if(previous==null&&records.isNotEmpty){
+            _selectedRunId=records.first['id'].toString();
+          }
+        });
+        await _refreshSamples();
+      }
     }catch(e){
       if(mounted){
         ScaffoldMessenger.of(context).showSnackBar(
@@ -79,6 +104,34 @@ class _WorkspacePageState extends State<WorkspacePage> {
     }
   }
 
+  Future<void> _refreshSamples() async {
+    final runId=_selectedRunId;
+    if(runId==null||_loadingSamples)return;
+    _loadingSamples=true;
+    try{
+      final actual=await widget.api.experimentSamples(runId);
+      if(mounted&&runId==_selectedRunId){
+        setState((){
+          _samples=actual;
+          _sampleError=null;
+        });
+      }
+    }catch(e){
+      if(mounted&&runId==_selectedRunId){
+        setState(()=>_sampleError=e.toString());
+      }
+    }finally{_loadingSamples=false;}
+  }
+
+  Future<void> _reviewRun(String id) async {
+    if(_selectedRunId==id)return;
+    setState((){
+      _selectedRunId=id;
+      _samples=[];
+      _sampleError=null;
+    });
+    await _refreshSamples();
+  }
   Future<void> _exportRun(String runId) async {
     if(_exportingRunId!=null)return;
     setState(()=>_exportingRunId=runId);
@@ -120,6 +173,55 @@ class _WorkspacePageState extends State<WorkspacePage> {
       const SizedBox(height:8),
       Text(L.t('csv_note'),style:const TextStyle(
         color:Color(0xFF64748B),fontSize:12)),
+      const SizedBox(height:8),
+      Text(L.t('updating_every_second'),style:const TextStyle(
+        color:Color(0xFF64748B),fontSize:12)),
+      const SizedBox(height:14),
+      if(_selectedRunId!=null)Card(child:Padding(
+        padding:const EdgeInsets.all(16),
+        child:Column(crossAxisAlignment:CrossAxisAlignment.stretch,children:[
+          Text(L.t('live_monitor'),style:Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height:12),
+          TelemetryChart(samples:_samples,
+            intervalMs:_runs.where((r)=>r['id'].toString()==_selectedRunId)
+                .map((r)=>r['sample_interval_ms'] is int
+                    ?r['sample_interval_ms'] as int:3000)
+                .firstOrNull??3000),
+          const SizedBox(height:12),
+          if(_sampleError!=null)Text(_sampleError!,
+            style:const TextStyle(color:Colors.red,fontSize:12)),
+          Text(L.t('live_samples'),style:Theme.of(context).textTheme.titleSmall),
+          if(_samples.isEmpty)Padding(
+            padding:const EdgeInsets.symmetric(vertical:12),
+            child:Text(L.t('sampling_empty'))),
+          if(_samples.isNotEmpty)SingleChildScrollView(
+            scrollDirection:Axis.horizontal,
+            child:DataTable(
+              columnSpacing:16,
+              headingRowHeight:36,
+              dataRowMinHeight:34,
+              dataRowMaxHeight:38,
+              columns:[
+                DataColumn(label:Text(L.t('latest_received'))),
+                DataColumn(label:Text(L.t('pwm'))),
+                DataColumn(label:Text(L.t('rpm'))),
+                DataColumn(label:Text(L.t('motor'))),
+              ],
+              rows:_samples.reversed.take(12).map((sample){
+                final dt=DateTime.tryParse(sample['sampled_at'].toString())?.toLocal();
+                final stamp=dt==null?'—':
+                   '${dt.hour.toString().padLeft(2,'0')}:${dt.minute.toString().padLeft(2,'0')}:${dt.second.toString().padLeft(2,'0')}';
+                return DataRow(cells:[
+                  DataCell(Text(stamp)),
+                  DataCell(Text(sample['pwm_percent']==null?'—':
+                    '${sample['pwm_percent']}%')),
+                  DataCell(Text(sample['actual_rpm']==null?'—':
+                    sample['actual_rpm'].toString())),
+                  DataCell(Text(L.t(sample['motor_enabled']==true?'running':'stopped'))),
+                ]);
+              }).toList(),
+            )),
+        ]))),
       const SizedBox(height:14),
       if(_loadingRuns)const LinearProgressIndicator(),
       if(_runs.isEmpty&&!_loadingRuns)Card(child:Padding(
@@ -127,12 +229,14 @@ class _WorkspacePageState extends State<WorkspacePage> {
         child:Text(L.t('no_experiments')))),
       ..._runs.map((r){
         final id=(r['id']??'').toString();
+        final selected=id==_selectedRunId;
         final ended=r['ended_at']!=null;
         final count=r['sample_count']??0;
         final reason=r['end_reason']?.toString();
         final status=ended?reason=='signal_lost'
             ?L.t('signal_lost'):L.t('record_finished'):L.t('recording');
-        return Card(child:Padding(padding:const EdgeInsets.all(10),
+        return Card(color:selected?const Color(0xFFF0F6FC):null,
+          child:Padding(padding:const EdgeInsets.all(10),
           child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[
             ListTile(
               contentPadding:const EdgeInsets.symmetric(horizontal:8),
@@ -144,8 +248,13 @@ class _WorkspacePageState extends State<WorkspacePage> {
             if(ended)Padding(padding:const EdgeInsets.only(left:8,bottom:6),
               child:Text('${L.t('record_ended')}: ${_formatRunTime(r['ended_at'])}',
                 style:const TextStyle(fontSize:12,color:Color(0xFF64748B)))),
-            Align(alignment:Alignment.centerRight,
-              child:TextButton.icon(
+            Row(mainAxisAlignment:MainAxisAlignment.end,children:[
+              TextButton.icon(
+                onPressed:()=>_reviewRun(id),
+                icon:const Icon(Icons.show_chart),
+                label:Text(L.t('replay_run')),
+              ),
+              TextButton.icon(
                 onPressed:_exportingRunId==null?()=>_exportRun(id):null,
                 icon:_exportingRunId==id
                     ?const SizedBox(width:16,height:16,
@@ -153,7 +262,8 @@ class _WorkspacePageState extends State<WorkspacePage> {
                     :const Icon(Icons.file_download_outlined),
                 label:Text(_exportingRunId==id
                     ?L.t('exporting_csv'):L.t('export_csv')),
-              )),
+              ),
+            ]),
           ])));
       }),
     ]),
@@ -261,6 +371,9 @@ class _WorkspacePageState extends State<WorkspacePage> {
     final pwm=_device?['pwm_percent'];
     final rpm=_device?['actual_rpm'];
     final canOperate=online&&recent&&!_busy;
+    final reportedIntervalMs=_device?['sample_interval_ms'];
+    final selectedSecs=reportedIntervalMs is int
+        ? reportedIntervalMs~/1000:null;
     return RefreshIndicator(onRefresh:_refresh,child:ListView(
       padding:const EdgeInsets.all(20),children:[
         Text(widget.api.deviceId,style:Theme.of(context).textTheme.titleLarge),
@@ -287,6 +400,22 @@ class _WorkspacePageState extends State<WorkspacePage> {
             _metric(L.t('rpm'),rpm==null?L.t('rpm_absent'):'$rpm RPM'),
           ],
         ))),
+        const SizedBox(height:12),
+        Card(child:Padding(padding:const EdgeInsets.all(16),child:Column(
+          crossAxisAlignment:CrossAxisAlignment.start,children:[
+            Text(L.t('sample_interval'),style:const TextStyle(
+              fontWeight:FontWeight.w700)),
+            const SizedBox(height:6),
+            Text(L.t('sample_interval_hint'),style:const TextStyle(
+              color:Color(0xFF64748B),fontSize:12)),
+            const SizedBox(height:10),
+            Wrap(spacing:8,runSpacing:8,children:
+              [1,3,5,10].map((sec)=>ChoiceChip(
+                label:Text('${sec}s'),
+                selected:selectedSecs==sec,
+                onSelected:canOperate?(_)=>_send('SET_SAMPLE_INTERVAL',sec):null,
+              )).toList()),
+          ]))),
         const SizedBox(height:12),
         Card(child:Padding(padding:const EdgeInsets.all(20),child:Column(
           crossAxisAlignment:CrossAxisAlignment.stretch,children:[
