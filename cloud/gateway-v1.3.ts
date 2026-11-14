@@ -135,16 +135,40 @@ const client = env.MQTT_HOST && env.MQTT_USER && env.MQTT_PASSWORD
     rejectUnauthorized:true,connectTimeout:10000})
   : null;
 let mqttOnline=false;
+const subscribedFilters = new Set();
+function subscribeFilter(filter) {
+  if(!client || !mqttOnline) return;
+  client.subscribe(filter,{qos:1},(e,granted)=>{
+    if(e || !granted?.some(row=>row.topic===filter && row.qos!==128)){
+      console.warn("MQTT subscription not authorized:",filter,e?.message||"rejected");
+      return;
+    }
+    subscribedFilters.add(filter);
+    console.log("MQTT subscribed:",filter);
+  });
+}
+function subscribeDeviceTopics(id) {
+  if(!validDevice(id))return;
+  for(const suffix of ["state","presence","ack","event"]){
+    subscribeFilter(MQTT_PREFIX+id+"/"+suffix);
+  }
+}
 if(client){
   client.on("connect",()=>{
     mqttOnline=true;
-    client.subscribe(["state","presence","ack","event","pair"].map(
-      suffix=>MQTT_PREFIX+"+/"+suffix),{qos:1},(e)=>{
-      if(e)console.error("MQTT subscription failed",e.message);
-    });
+    subscribedFilters.clear();
+    // Existing devices may be authorized by exact topic ACLs even when
+    // EMQX rejects broad + wildcard subscriptions.
+    void (async()=>{
+      const known=await q("SELECT device_id FROM devices");
+      for(const row of known)subscribeDeviceTopics(row.device_id);
+      for(const suffix of ["state","presence","ack","event","pair"]){
+        subscribeFilter(MQTT_PREFIX+"+/"+suffix);
+      }
+    })().catch(e=>console.error("MQTT subscribe initialization:",e.message));
   });
-  client.on("close",()=>mqttOnline=false);
-  client.on("offline",()=>mqttOnline=false);
+  client.on("close",()=>{mqttOnline=false;subscribedFilters.clear();});
+  client.on("offline",()=>{mqttOnline=false;subscribedFilters.clear();});
   client.on("error",e=>{mqttOnline=false;console.error("MQTT error",e.message);});
   client.on("message",(topic,data)=>{handleMqtt(topic,data).catch(
     e=>console.error("MQTT payload processing",e.message));});
@@ -197,6 +221,9 @@ Bun.serve({
     try{
       if(path==="/health"&&method==="GET")
         return json({api:"ok",version:"1.3.0",mqtt_connected:mqttOnline,
+          mqtt_control_subscription_ready:subscribedFilters.has(MQTT_PREFIX+(env.DEVICE_ID||"stirrer-001")+"/state") ||
+             subscribedFilters.has(MQTT_PREFIX+"+/state"),
+          mqtt_pairing_discovery_ready:subscribedFilters.has(MQTT_PREFIX+"+/pair"),
           database:"configured",mode:"multi-tenant"});
       const ip=req.headers.get("x-forwarded-for")?.split(",")[0]?.trim()||"unknown";
       if(path==="/api/v1/register"&&method==="POST"){
@@ -312,6 +339,7 @@ Bun.serve({
           const result=await q("INSERT INTO devices(device_id,lab_id,label,claimed_by,created_at) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING RETURNING device_id",
             [deviceId,labId,label,user.id,now()]);
           if(!result.length)return err("Device was claimed already",409);
+          subscribeDeviceTopics(deviceId);
           return json({device_id:deviceId,label},201);
         }
       }
