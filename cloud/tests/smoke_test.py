@@ -48,6 +48,13 @@ check(404, req(device_path + "/runs", token=bob))
 status, runs = req(device_path + "/runs", token=alice)
 check(200, (status, runs))
 assert runs[0]["id"] == run_id and runs[0]["sample_count"] == 2, runs
+status, samples = req(device_path + "/runs/" + run_id + "/samples", token=alice)
+check(200, (status, samples))
+assert len(samples) == 2 and samples[0]["pwm_percent"] == 30, samples
+check(404, req(device_path + "/runs/" + run_id + "/samples", token=bob))
+check(422, req(device_path + "/commands", "POST",
+               {"command":"SET_SAMPLE_INTERVAL","value":2}, token=alice))
+
 csv_request = urllib.request.Request(
     BASE + device_path + "/runs/" + run_id + ".csv",
     headers={"Authorization": "Bearer " + alice})
