@@ -39,6 +39,12 @@ async function initDb() {
   await q("CREATE TABLE IF NOT EXISTS devices (device_id TEXT PRIMARY KEY, lab_id UUID NOT NULL REFERENCES labs(id) ON DELETE CASCADE, label TEXT NOT NULL, claimed_by UUID NOT NULL REFERENCES users(id), created_at BIGINT NOT NULL)");
   await q("CREATE TABLE IF NOT EXISTS commands (command_id UUID PRIMARY KEY, device_id TEXT NOT NULL REFERENCES devices(device_id), user_id UUID NOT NULL REFERENCES users(id), command TEXT NOT NULL, value INTEGER, status TEXT NOT NULL, ack_json TEXT, created_at BIGINT NOT NULL)");
   await q("CREATE TABLE IF NOT EXISTS device_events (id UUID PRIMARY KEY, device_id TEXT NOT NULL REFERENCES devices(device_id), kind TEXT NOT NULL, data_json TEXT NOT NULL, created_at BIGINT NOT NULL)");
+  await q("CREATE TABLE IF NOT EXISTS experiment_runs (id UUID PRIMARY KEY, device_id TEXT NOT NULL REFERENCES devices(device_id), started_at TIMESTAMPTZ NOT NULL DEFAULT now(), ended_at TIMESTAMPTZ, end_reason TEXT, last_sample_at TIMESTAMPTZ NOT NULL DEFAULT now(), sample_count INTEGER NOT NULL DEFAULT 0)");
+  await q("CREATE UNIQUE INDEX IF NOT EXISTS idx_experiment_one_active ON experiment_runs(device_id) WHERE ended_at IS NULL");
+  await q("CREATE INDEX IF NOT EXISTS idx_experiment_device_recent ON experiment_runs(device_id, started_at DESC)");
+  await q("CREATE TABLE IF NOT EXISTS experiment_samples (id BIGSERIAL PRIMARY KEY, run_id UUID NOT NULL REFERENCES experiment_runs(id) ON DELETE CASCADE, sampled_at TIMESTAMPTZ NOT NULL DEFAULT now(), motor_enabled BOOLEAN NOT NULL, pwm_percent INTEGER, actual_rpm DOUBLE PRECISION, fault TEXT, uptime_ms BIGINT)");
+  await q("CREATE INDEX IF NOT EXISTS idx_experiment_samples_run ON experiment_samples(run_id, id)");
+
   await q("CREATE INDEX IF NOT EXISTS idx_commands_device_time ON commands(device_id,created_at DESC)");
   await q("CREATE INDEX IF NOT EXISTS idx_device_events_device_time ON device_events(device_id,created_at DESC)");
   // Legacy admin is migrated only from previously configured server-side scrypt
@@ -127,6 +133,44 @@ async function recordEvent(id,kind,obj) {
     [randomUUID(),id,kind,JSON.stringify(obj),now()]);
 }
 
+
+async function recordExperimentState(deviceId, state) {
+  if(typeof state.motor_enabled!=="boolean")return;
+  const known=await q("SELECT 1 FROM devices WHERE device_id=$1",[deviceId]);
+  if(!known.length)return;
+  let active=(await q("SELECT id,last_sample_at FROM experiment_runs WHERE device_id=$1 AND ended_at IS NULL LIMIT 1",[deviceId]))[0];
+  if(active && Date.now()-new Date(active.last_sample_at).getTime()>15000) {
+    await q("UPDATE experiment_runs SET ended_at=last_sample_at,end_reason='signal_lost' WHERE id=$1 AND ended_at IS NULL",[active.id]);
+    active=null;
+  }
+  const running=state.motor_enabled;
+  if(!active&&!running)return;
+  if(!active){
+    await q("INSERT INTO experiment_runs(id,device_id) VALUES($1,$2) ON CONFLICT DO NOTHING",
+      [randomUUID(),deviceId]);
+    active=(await q("SELECT id FROM experiment_runs WHERE device_id=$1 AND ended_at IS NULL LIMIT 1",[deviceId]))[0];
+    if(!active)return;
+  }
+  const pwm=Number.isInteger(state.pwm_percent)&&state.pwm_percent>=0&&state.pwm_percent<=100?state.pwm_percent:null;
+  const rpm=typeof state.actual_rpm==="number"&&Number.isFinite(state.actual_rpm)&&state.actual_rpm>=0?state.actual_rpm:null;
+  const uptime=Number.isSafeInteger(state.uptime_ms)&&state.uptime_ms>=0?state.uptime_ms:null;
+  const fault=typeof state.fault==="string"?state.fault.slice(0,120):null;
+  await q("INSERT INTO experiment_samples(run_id,motor_enabled,pwm_percent,actual_rpm,fault,uptime_ms) VALUES($1,$2,$3,$4,$5,$6)",
+    [active.id,running,pwm,rpm,fault,uptime]);
+  if(running){
+    await q("UPDATE experiment_runs SET last_sample_at=now(),sample_count=sample_count+1 WHERE id=$1 AND ended_at IS NULL",[active.id]);
+  }else{
+    await q("UPDATE experiment_runs SET last_sample_at=now(),sample_count=sample_count+1,ended_at=now(),end_reason=$2 WHERE id=$1 AND ended_at IS NULL",[active.id,fault?"fault":"stopped"]);
+  }
+}
+
+function csvCell(value) {
+  if(value==null)return "";
+  let str=String(value);
+  if(/^[\\s]*[=+@-]/.test(str))str="'"+str;
+  return '"'+str.replaceAll('"','""')+'"';
+}
+
 const client = env.MQTT_HOST && env.MQTT_USER && env.MQTT_PASSWORD
   ? mqtt.connect("mqtts://" + env.MQTT_HOST + ":" + (env.MQTT_PORT||"8883"),{
     clientId:"smartstir-gateway-v13-" + randomBytes(5).toString("hex"),
@@ -170,11 +214,11 @@ if(client){
   client.on("close",()=>{mqttOnline=false;subscribedFilters.clear();});
   client.on("offline",()=>{mqttOnline=false;subscribedFilters.clear();});
   client.on("error",e=>{mqttOnline=false;console.error("MQTT error",e.message);});
-  client.on("message",(topic,data)=>{handleMqtt(topic,data).catch(
+  client.on("message",(topic,data,packet)=>{handleMqtt(topic,data,!!packet?.retain).catch(
     e=>console.error("MQTT payload processing",e.message));});
 }
 
-async function handleMqtt(topic,payload) {
+async function handleMqtt(topic,payload,retained=false) {
   const parts=topic.split("/");
   if(parts.length!==5 || parts[0]!=="smartstir" || parts[1]!=="v1" ||
       parts[2]!=="devices")return;
@@ -201,7 +245,9 @@ async function handleMqtt(topic,payload) {
     for(const key of ["motor_enabled","pwm_percent","actual_rpm","armed","fault"])
       if(Object.prototype.hasOwnProperty.call(obj,key))s[key]=obj[key];
     s.lastSeen=now();s.lastStateAt=now();
-    states.set(deviceId,s);return;
+    states.set(deviceId,s);
+    if(!retained)await recordExperimentState(deviceId,obj);
+    return;
   }
   if(kind==="ack"){
     const commandId=String(obj.command_id||"");
