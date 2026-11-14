@@ -33,8 +33,8 @@ jobs:
           if [ -z "$signer" ]; then echo "apksigner not installed"; exit 1; fi
           "$signer" verify --print-certs old/SmartStir-Lab-v1.2.0-test.apk > old/certs.txt
           "$signer" verify --print-certs new/SmartStir-Lab-v1.3.3-debug.apk > new/certs.txt
-          a="$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' old/certs.txt | head -1)"
-          b="$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' new/certs.txt | head -1)"
+          a="$(grep -m1 'certificate SHA-256 digest:' old/certs.txt | sed 's/.*certificate SHA-256 digest: //')"
+          b="$(grep -m1 'certificate SHA-256 digest:' new/certs.txt | sed 's/.*certificate SHA-256 digest: //')"
           if [ -z "$a" ] || [ -z "$b" ]; then cat old/certs.txt new/certs.txt; exit 1; fi
           echo "V1.2 signer SHA-256: $a"
           echo "V1.3.3 signer SHA-256: $b"
