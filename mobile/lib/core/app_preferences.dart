@@ -103,5 +103,16 @@ class L {
     'no_events': {'zh':'暂无事件', 'en':'No events yet', 'ja':'イベントなし'},
     'error': {'zh':'操作失败', 'en':'Operation failed', 'ja':'操作に失敗しました'},
     'info': {'zh':'关于项目', 'en':'About', 'ja':'プロジェクト情報'},
+    'checking_updates': {'zh':'正在检查新版本…','en':'Checking for updates…','ja':'更新を確認中…'},
+    'latest_version': {'zh':'已是最新版本','en':'Up to date','ja':'最新バージョンです'},
+    'current_version': {'zh':'当前版本','en':'Current version','ja':'現在のバージョン'},
+    'no_new_version': {'zh':'暂未发现新的稳定版 APK。','en':'No newer stable APK found.','ja':'新しい安定版APKはありません。'},
+    'new_version': {'zh':'发现新版本','en':'Update available','ja':'新しいバージョンがあります'},
+    'release_notes_missing': {'zh':'本次发布暂无更新说明。','en':'No release notes provided.','ja':'リリースノートはありません。'},
+    'update_security': {'zh':'将通过系统浏览器打开 GitHub 下载页，安装需要 Android 系统确认。','en':'Opens GitHub in your browser; Android will ask before installation.','ja':'GitHubのダウンロードページを開きます。インストールにはAndroidの確認が必要です。'},
+    'later': {'zh':'稍后再说','en':'Later','ja':'後で'},
+    'download_update': {'zh':'下载并更新','en':'Download update','ja':'更新をダウンロード'},
+    'browser_error': {'zh':'无法打开浏览器，请稍后重试','en':'Unable to open browser. Try again.','ja':'ブラウザを開けません。後ほどお試しください。'},
+    'update_error': {'zh':'检查更新失败','en':'Update check failed','ja':'更新の確認に失敗しました'},
   };
 }
