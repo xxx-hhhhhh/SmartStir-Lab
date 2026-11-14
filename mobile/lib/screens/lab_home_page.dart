@@ -115,7 +115,8 @@ class _LabHomePageState extends State<LabHomePage> {
         const SizedBox(height:12),
         TextField(onChanged:(v)=>label=v,decoration:InputDecoration(labelText:L.t('device_name'))),
         const SizedBox(height:12),
-        TextField(onChanged:(v)=>code=v,
+        TextField(onChanged:(v)=>code=v,obscureText:true,autocorrect:false,
+          enableSuggestions:false,
           decoration:InputDecoration(labelText:L.t('pairing_code'))),
         const SizedBox(height:12),
         Text(L.t('pair_hint'),style:const TextStyle(fontSize:12,color:Color(0xFF64748B))),
@@ -123,7 +124,7 @@ class _LabHomePageState extends State<LabHomePage> {
       actions:[
         TextButton(onPressed:()=>Navigator.pop(ctx),child:Text(L.t('cancel'))),
         FilledButton(onPressed:()=>Navigator.pop(ctx,{
-          'id':id.trim(),'label':label.trim(),'code':code.trim()
+          'id':id.trim().toLowerCase(),'label':label.trim(),'code':code.trim()
         }),child:Text(L.t('submit'))),
       ],
     ));
