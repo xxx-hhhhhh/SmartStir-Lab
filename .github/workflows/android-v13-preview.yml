@@ -1,0 +1,62 @@
+name: Android V1.3 Preview APK
+on:
+  push:
+    branches: [feature/labs-users-i18n-v1.3]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.9'
+          channel: stable
+          cache: true
+      - name: Generate Android platform project
+        working-directory: mobile
+        run: flutter create --org com.smartstir --project-name smartstir_lab --platforms=android .
+      - name: Delete Flutter template widget test
+        working-directory: mobile
+        run: rm -f test/widget_test.dart
+      - name: Ensure internet permission
+        working-directory: mobile
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path=Path('android/app/src/main/AndroidManifest.xml')
+          src=path.read_text()
+          if 'android.permission.INTERNET' not in src:
+              src=src.replace('<application','<uses-permission android:name="android.permission.INTERNET" />\n    <application',1)
+              path.write_text(src)
+          PY
+      - name: Pub get
+        working-directory: mobile
+        run: flutter pub get
+      - name: Static analysis
+        working-directory: mobile
+        run: flutter analyze
+      - name: Unit tests
+        working-directory: mobile
+        run: flutter test
+      - name: Build debug preview APK
+        working-directory: mobile
+        run: flutter build apk --debug
+      - name: Copy output
+        run: |
+          mkdir -p dist
+          cp mobile/build/app/outputs/flutter-apk/app-debug.apk dist/SmartStir-Lab-v1.3.0-preview-debug.apk
+          (cd dist && sha256sum SmartStir-Lab-v1.3.0-preview-debug.apk > SHA256SUMS.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SmartStir-Lab-v1.3.0-preview-debug
+          path: dist/
