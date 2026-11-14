@@ -167,7 +167,7 @@ async function recordExperimentState(deviceId, state) {
 function csvCell(value) {
   if(value==null)return "";
   let str=String(value);
-  if(/^[\\s]*[=+@-]/.test(str))str="'"+str;
+  if(/^\s*[=+@-]/.test(str))str="'"+str;
   return '"'+str.replaceAll('"','""')+'"';
 }
 
@@ -392,6 +392,33 @@ Bun.serve({
       if(path==="/api/v1/devices"&&method==="GET"){
         const rows=await q("SELECT d.device_id,d.label FROM devices d JOIN lab_members m ON m.lab_id=d.lab_id WHERE m.user_id=$1",[user.id]);
         return json(rows.map(row=>({...row,...currentState(row.device_id)})));
+      }
+
+      // A laboratory member can list and export ONLY their lab's device runs.
+      const runPath=path.match(/^\\/api\\/v1\\/devices\\/([a-z0-9-]+)\\/runs(?:\\/([0-9a-f-]{36})\\.csv)?$/i);
+      if(runPath&&method==="GET"){
+        const deviceId=runPath[1],runId=runPath[2];
+        if(!await belongs(user.id,deviceId))return err("Device not found",404);
+        if(!runId){
+          await q("UPDATE experiment_runs SET ended_at=last_sample_at,end_reason='signal_lost' WHERE device_id=$1 AND ended_at IS NULL AND last_sample_at < now() - interval '15 seconds'",[deviceId]);
+          return json(await q("SELECT id,device_id,started_at,ended_at,end_reason,sample_count,last_sample_at FROM experiment_runs WHERE device_id=$1 ORDER BY started_at DESC LIMIT 50",[deviceId]));
+        }
+        const selected=await q("SELECT id FROM experiment_runs WHERE id=$1 AND device_id=$2",[runId,deviceId]);
+        if(!selected.length)return err("Experiment not found",404);
+        const samples=await q("SELECT sampled_at,motor_enabled,pwm_percent,actual_rpm,fault,uptime_ms FROM experiment_samples WHERE run_id=$1 ORDER BY id ASC LIMIT 50001",[runId]);
+        if(samples.length>50000)return err("Experiment too large for one CSV export",413);
+        const header="timestamp_utc,device_id,motor_enabled,pwm_percent,actual_rpm,fault,uptime_ms";
+        const lines=samples.map(row=>[
+          new Date(row.sampled_at).toISOString(),deviceId,row.motor_enabled,
+          row.pwm_percent,row.actual_rpm,row.fault,row.uptime_ms
+        ].map(csvCell).join(","));
+        const csv="\\uFEFF"+[header,...lines].join("\\r\\n")+"\\r\\n";
+        return new Response(csv,{status:200,headers:{
+          "content-type":"text/csv; charset=utf-8",
+          "content-disposition":'attachment; filename="smartstir-'+deviceId+'-'+runId+'.csv"',
+          "cache-control":"private, no-store",
+          "x-content-type-options":"nosniff"
+        }});
       }
       const devicePath=path.match(/^\/api\/v1\/devices\/([a-z0-9-]+)(?:\/(events|commands)(?:\/([0-9a-f-]{36}))?)?$/i);
       if(devicePath){
