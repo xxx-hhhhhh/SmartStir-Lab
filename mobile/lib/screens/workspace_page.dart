@@ -1,5 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
+import 'package:cross_file/cross_file.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:flutter/material.dart';
 import '../core/api.dart';
 import '../core/app_preferences.dart';
@@ -23,6 +26,9 @@ class _WorkspacePageState extends State<WorkspacePage> {
   bool _stopPending=false;
   Map<String,dynamic>? _device;
   List<Map<String,dynamic>> _events=[];
+  List<Map<String,dynamic>> _runs=[];
+  bool _loadingRuns=false;
+  String? _exportingRunId;
   double _pwm=30;
   String? _error;
   String _action='';
@@ -56,6 +62,103 @@ class _WorkspacePageState extends State<WorkspacePage> {
       if(mounted)setState(()=>_events=events);
     }catch(e){if(mounted)setState(()=>_error=e.toString());}
   }
+
+
+  Future<void> _refreshRuns() async {
+    if(_loadingRuns)return;
+    setState(()=>_loadingRuns=true);
+    try{
+      final records=await widget.api.experimentRuns();
+      if(mounted)setState(()=>_runs=records);
+    }catch(e){
+      if(mounted){
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content:Text('${L.t('error')}: $e')));
+      }
+    }finally{
+      if(mounted)setState(()=>_loadingRuns=false);
+    }
+  }
+
+  Future<void> _exportRun(String runId) async {
+    if(_exportingRunId!=null)return;
+    setState(()=>_exportingRunId=runId);
+    try{
+      final data=await widget.api.experimentCsv(runId);
+      if(!mounted)return;
+      final fileName='SmartStir-${widget.api.deviceId}-$runId.csv';
+      await SharePlus.instance.share(ShareParams(
+        files:[XFile.fromData(Uint8List.fromList(data),mimeType:'text/csv')],
+        fileNameOverrides:[fileName],
+        title:L.t('export_csv'),
+      ));
+    }catch(e){
+      if(mounted){
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content:Text('${L.t('export_failed')}: $e')));
+      }
+    }finally{
+      if(mounted)setState(()=>_exportingRunId=null);
+    }
+  }
+
+  String _formatRunTime(dynamic raw) {
+    if(raw==null)return '—';
+    final parsed=DateTime.tryParse(raw.toString());
+    if(parsed==null)return raw.toString();
+    return parsed.toLocal().toString().split('.').first;
+  }
+
+  Widget _runsTab()=>RefreshIndicator(
+    onRefresh:_refreshRuns,
+    child:ListView(padding:const EdgeInsets.all(20),children:[
+      Row(children:[
+        Expanded(child:Text(L.t('experiments'),
+          style:Theme.of(context).textTheme.headlineSmall)),
+        IconButton(onPressed:_loadingRuns?null:_refreshRuns,
+          icon:const Icon(Icons.refresh),tooltip:L.t('refresh')),
+      ]),
+      const SizedBox(height:8),
+      Text(L.t('csv_note'),style:const TextStyle(
+        color:Color(0xFF64748B),fontSize:12)),
+      const SizedBox(height:14),
+      if(_loadingRuns)const LinearProgressIndicator(),
+      if(_runs.isEmpty&&!_loadingRuns)Card(child:Padding(
+        padding:const EdgeInsets.all(24),
+        child:Text(L.t('no_experiments')))),
+      ..._runs.map((r){
+        final id=(r['id']??'').toString();
+        final ended=r['ended_at']!=null;
+        final count=r['sample_count']??0;
+        final reason=r['end_reason']?.toString();
+        final status=ended?reason=='signal_lost'
+            ?L.t('signal_lost'):L.t('record_finished'):L.t('recording');
+        return Card(child:Padding(padding:const EdgeInsets.all(10),
+          child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[
+            ListTile(
+              contentPadding:const EdgeInsets.symmetric(horizontal:8),
+              leading:Icon(ended?Icons.history:Icons.fiber_manual_record,
+                color:ended?Colors.grey:Colors.green),
+              title:Text('${L.t('record_started')}: ${_formatRunTime(r['started_at'])}'),
+              subtitle:Text('$status · ${L.t('sample_count')}: $count'),
+            ),
+            if(ended)Padding(padding:const EdgeInsets.only(left:8,bottom:6),
+              child:Text('${L.t('record_ended')}: ${_formatRunTime(r['ended_at'])}',
+                style:const TextStyle(fontSize:12,color:Color(0xFF64748B)))),
+            Align(alignment:Alignment.centerRight,
+              child:TextButton.icon(
+                onPressed:_exportingRunId==null?()=>_exportRun(id):null,
+                icon:_exportingRunId==id
+                    ?const SizedBox(width:16,height:16,
+                       child:CircularProgressIndicator(strokeWidth:2))
+                    :const Icon(Icons.file_download_outlined),
+                label:Text(_exportingRunId==id
+                    ?L.t('exporting_csv'):L.t('export_csv')),
+              )),
+          ]))));
+      }),
+    ]),
+  );
 
   Future<void> _send(String command,[int? value]) async {
     if(_busy&&command!='STOP')return;
@@ -134,16 +237,18 @@ class _WorkspacePageState extends State<WorkspacePage> {
     body:SafeArea(child:Center(child:ConstrainedBox(
       constraints:const BoxConstraints(maxWidth:760),
       child:IndexedStack(index:_tab,children:[
-        _controlTab(),_eventsTab(),_settingsTab(),
+        _controlTab(),_runsTab(),_eventsTab(),_settingsTab(),
       ]),
     ))),
     bottomNavigationBar:NavigationBar(selectedIndex:_tab,
       onDestinationSelected:(v){
         setState(()=>_tab=v);
-        if(v==1)_refreshEvents();
+        if(v==1)_refreshRuns();
+        if(v==2)_refreshEvents();
       },
       destinations:[
         NavigationDestination(icon:const Icon(Icons.speed_outlined),label:L.t('control')),
+        NavigationDestination(icon:const Icon(Icons.table_chart_outlined),label:L.t('experiments')),
         NavigationDestination(icon:const Icon(Icons.receipt_long_outlined),label:L.t('events')),
         NavigationDestination(icon:const Icon(Icons.settings_outlined),label:L.t('settings')),
       ]),
