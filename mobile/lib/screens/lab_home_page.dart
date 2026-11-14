@@ -61,8 +61,12 @@ class _LabHomePageState extends State<LabHomePage> {
 
   Future<void> _perform(Future<void> Function() work) async {
     try {await work();if(mounted)await _refresh();}
-    catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content:Text('${L.t('error')}: $e')));}
+    catch(e){
+      if(mounted){
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content:Text('${L.t('error')}: $e')));
+      }
+    }
   }
 
   Future<void> _createLab() async {
@@ -205,7 +209,7 @@ class _LabHomePageState extends State<LabHomePage> {
                     icon:const Icon(Icons.add_circle_outline),
                     label:Text(L.t('add_device'))),
                 ],
-              ))));
+              )));
           }),
           const SizedBox(height:8),
           TextButton.icon(
