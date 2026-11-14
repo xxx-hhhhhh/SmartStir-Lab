@@ -16,7 +16,9 @@ class SmartStirApi {
 
   final String baseUrl;
   final String token;
-  static const deviceId = 'stirrer-001';
+  String deviceId = 'stirrer-001';
+  String labName = '';
+  void selectDevice(String id, String lab) { deviceId = id; labName = lab; }
   final http.Client _client = http.Client();
 
   void close() => _client.close();
@@ -30,6 +32,26 @@ class SmartStirApi {
       throw ApiError('请输入 HTTPS 服务地址，例如 https://your-api.up.railway.app');
     }
     return input;
+  }
+
+  static Future<SmartStirApi> register(String base, String username, String password) async {
+    final url = validateBaseUrl(base);
+    final client = http.Client();
+    try {
+      final response = await client.post(Uri.parse('$url/api/v1/register'),
+        headers: const {'Content-Type':'application/json'},
+        body: jsonEncode({'username': username, 'password': password}))
+        .timeout(const Duration(seconds: 12));
+      final data = _decodeMap(response);
+      if (response.statusCode != 201) {
+        throw ApiError(_extractError(data, response.statusCode), response.statusCode);
+      }
+      final token = data['access_token'];
+      if (token is! String || token.isEmpty) throw ApiError('Invalid registration response');
+      return SmartStirApi(baseUrl: url, token: token);
+    } on TimeoutException {
+      throw ApiError('Server timeout');
+    } finally { client.close(); }
   }
 
   static Future<SmartStirApi> login(String base, String username, String password) async {
@@ -87,25 +109,58 @@ class SmartStirApi {
     }
   }
 
+  Future<List<Map<String, dynamic>>> _getList(String path) async {
+    try {
+      final response = await _client.get(Uri.parse('$baseUrl$path'),
+        headers: {'Authorization':'Bearer $token'})
+        .timeout(const Duration(seconds: 12));
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw ApiError(_extractError(_decodeMap(response), response.statusCode), response.statusCode);
+      }
+      final data = jsonDecode(utf8.decode(response.bodyBytes));
+      if (data is! List) throw ApiError('Invalid server list response');
+      return data.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    } on TimeoutException { throw ApiError('Server timeout'); }
+  }
+
+  Future<List<Map<String, dynamic>>> labs() => _getList('/api/v1/labs');
+  Future<Map<String, dynamic>> createLab(String name) =>
+      _request('POST','/api/v1/labs',{'name':name});
+  Future<List<Map<String, dynamic>>> invitations() =>
+      _getList('/api/v1/invitations');
+  Future<void> respondInvitation(String id, bool accept) async {
+    await _request('POST','/api/v1/invitations/$id/${accept ? "accept" : "decline"}',{});
+  }
+  Future<List<Map<String, dynamic>>> labDevices(String labId) =>
+      _getList('/api/v1/labs/$labId/devices');
+  Future<Map<String, dynamic>> addDevice(String labId, String id,
+      String pairingCode, String label) =>
+      _request('POST','/api/v1/labs/$labId/devices',
+        {'device_id':id,'pairing_code':pairingCode,'label':label});
+  Future<Map<String, dynamic>> inviteMember(String labId, String username) =>
+      _request('POST','/api/v1/labs/$labId/invitations',{'username':username});
+  Future<List<Map<String,dynamic>>> labMembers(String labId) =>
+      _getList('/api/v1/labs/$labId/members');
+
   Future<void> logout() async {
     await _request('POST', '/api/v1/logout', {});
   }
 
   Future<Map<String, dynamic>> device() =>
-      _request('GET', '/api/v1/devices/$deviceId');
+      _request('GET', '/api/v1/devices/${Uri.encodeComponent(deviceId)}');
 
   Future<Map<String, dynamic>> sendCommand(String command, {int? value}) =>
-      _request('POST', '/api/v1/devices/$deviceId/commands', {
+      _request('POST', '/api/v1/devices/${Uri.encodeComponent(deviceId)}/commands', {
         'command': command,
         if (value != null) 'value': value,
       });
 
   Future<Map<String, dynamic>> commandStatus(String id) =>
-      _request('GET', '/api/v1/devices/$deviceId/commands/$id');
+      _request('GET', '/api/v1/devices/${Uri.encodeComponent(deviceId)}/commands/$id');
 
   Future<List<Map<String, dynamic>>> events() async {
     try {
-      final r = await _client.get(Uri.parse('$baseUrl/api/v1/devices/$deviceId/events'),
+      final r = await _client.get(Uri.parse('$baseUrl/api/v1/devices/${Uri.encodeComponent(deviceId)}/events'),
         headers: {'Authorization': 'Bearer $token'}).timeout(const Duration(seconds: 10));
       if (r.statusCode != 200) {
         throw ApiError(_extractError(_decodeMap(r), r.statusCode), r.statusCode);
