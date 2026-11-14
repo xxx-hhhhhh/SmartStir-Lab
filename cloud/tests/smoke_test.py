@@ -37,7 +37,7 @@ status, labs = req("/api/v1/labs", token=alice)
 lab_id = labs[0]["id"]
 status, other = req("/api/v1/labs", token=bob)
 assert not other, other
-check(403, req(f"/api/v1/labs/{lab_id}/invitations", "POST",
+check(404, req(f"/api/v1/labs/{lab_id}/invitations", "POST",
                {"username":"alice_test"}, token=bob))
 check(201, req(f"/api/v1/labs/{lab_id}/invitations", "POST",
                {"username":"bob_test"}, token=alice))
