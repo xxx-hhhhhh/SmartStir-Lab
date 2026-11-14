@@ -1,0 +1,45 @@
+name: Verify V1.2 to V1.3.3 APK signing compatibility
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/verify-v12-v133-signer.yml'
+permissions:
+  contents: read
+jobs:
+  compare-signers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Download checksummed old and new APKs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir old new
+          gh release download v1.2.0 --repo "$REPO" --dir old \
+            --pattern 'SmartStir-Lab-v1.2.0-test.apk' --pattern 'SHA256SUMS.txt'
+          gh release download v1.3.3 --repo "$REPO" --dir new \
+            --pattern 'SmartStir-Lab-v1.3.3-debug.apk' --pattern 'SHA256SUMS.txt'
+          (cd old && sha256sum -c SHA256SUMS.txt)
+          (cd new && sha256sum -c SHA256SUMS.txt)
+      - name: Compare signing certificates (do not install APKs)
+        shell: bash
+        run: |
+          set -euo pipefail
+          signer="$(find "${ANDROID_HOME:-/opt/android-sdk}/build-tools" -maxdepth 2 -type f -name apksigner | sort -V | tail -1)"
+          if [ -z "$signer" ]; then echo "apksigner not installed"; exit 1; fi
+          "$signer" verify --print-certs old/SmartStir-Lab-v1.2.0-test.apk > old/certs.txt
+          "$signer" verify --print-certs new/SmartStir-Lab-v1.3.3-debug.apk > new/certs.txt
+          a="$(grep -m1 'certificate SHA-256 digest:' old/certs.txt | sed 's/.*certificate SHA-256 digest: //')"
+          b="$(grep -m1 'certificate SHA-256 digest:' new/certs.txt | sed 's/.*certificate SHA-256 digest: //')"
+          if [ -z "$a" ] || [ -z "$b" ]; then cat old/certs.txt new/certs.txt; exit 1; fi
+          echo "V1.2 signer SHA-256: $a"
+          echo "V1.3.3 signer SHA-256: $b"
+          if [ "$a" = "$b" ]; then
+            echo "RESULT: SAME SIGNING CERTIFICATE. In-place update signing requirement is satisfied."
+          else
+            echo "RESULT: DIFFERENT SIGNING CERTIFICATES. Android in-place update is NOT supported."
+          fi

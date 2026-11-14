@@ -1,10 +1,10 @@
 /*
- * SmartStir Lab ESP32 firmware v1.2.1
+ * SmartStir Lab ESP32 firmware v1.3.0
  * Adapted from the user's legacy TB6612 + Blinker + Hall + OLED sketch.
  *
  * Preserved: STBY=4, AIN1=5, AIN2=18, PWMA=19, 20kHz/8-bit PWM;
  *            optional Hall GPIO27 (1 pulse/rev) and OLED I2C SDA21/SCL22 (0x3C).
- * Replaced: Blinker -> secure MQTT via EMQX Cloud (stirrer-001).
+ * Replaced: Blinker -> secure MQTT via EMQX Cloud (per-device MQTT identity).
  * Not used: GPIO32. No relay required.
  *
  * IMPORTANT: This prototype is not intended for unattended use.
@@ -16,6 +16,7 @@
 #include <WiFiClientSecure.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>
 #include <time.h>
 #include "secrets.h"
 
@@ -69,14 +70,26 @@ void IRAM_ATTR hallSensorISR() {
 #define ESP_ARDUINO_VERSION_MAJOR 2
 #endif
 
-const char* DEVICE_ID = "stirrer-001";
-const char* TOPIC_COMMAND = "smartstir/v1/devices/stirrer-001/cmd";
-const char* TOPIC_ACK = "smartstir/v1/devices/stirrer-001/ack";
-const char* TOPIC_STATE = "smartstir/v1/devices/stirrer-001/state";
-const char* TOPIC_PRESENCE = "smartstir/v1/devices/stirrer-001/presence";
+// Each ESP32 must have its own device ID, MQTT account and private pairing code.
+// Existing local secrets.h without these options still compiles as a legacy device.
+#ifndef SMARTSTIR_DEVICE_ID
+#define SMARTSTIR_DEVICE_ID "stirrer-001"
+#endif
+#ifndef SMARTSTIR_PAIRING_CODE
+#define SMARTSTIR_PAIRING_CODE ""
+#endif
+const char* DEVICE_ID = SMARTSTIR_DEVICE_ID;
+const String TOPIC_PREFIX = String("smartstir/v1/devices/") + DEVICE_ID;
+const String TOPIC_COMMAND = TOPIC_PREFIX + "/cmd";
+const String TOPIC_ACK = TOPIC_PREFIX + "/ack";
+const String TOPIC_STATE = TOPIC_PREFIX + "/state";
+const String TOPIC_PRESENCE = TOPIC_PREFIX + "/presence";
+const String TOPIC_PAIR = TOPIC_PREFIX + "/pair";
 
 const unsigned long MAX_RUN_MS = 180000UL;
-const unsigned long REPORT_INTERVAL_MS = 3000UL;
+// 3 seconds by default; APP can select 1/3/5/10 s, saved in ESP32 NVS.
+const unsigned long DEFAULT_REPORT_INTERVAL_MS = 3000UL;
+uint32_t reportIntervalMs = DEFAULT_REPORT_INTERVAL_MS;
 const unsigned long WIFI_RETRY_INTERVAL_MS = 8000UL;
 const unsigned long MQTT_RETRY_INTERVAL_MS = 8000UL;
 
@@ -88,6 +101,7 @@ unsigned long runStartMs = 0;
 unsigned long lastReportMs = 0;
 unsigned long lastWiFiAttemptMs = 0;
 unsigned long lastMqttAttemptMs = 0;
+unsigned long lastPairingMs = 0;
 
 // QoS1 delivery may repeat. Cache recent command IDs, including START.
 String commandCache[16];
@@ -208,10 +222,26 @@ void publishState() {
   doc["actual_rpm"] = nullptr;
 #endif
   doc["uptime_ms"] = millis();
+  doc["sample_interval_ms"] = reportIntervalMs;
   doc["fault"] = nullptr;
   char json[420];
   size_t n = serializeJson(doc, json, sizeof(json));
-  if (n > 0 && n < sizeof(json) - 1) mqtt.publish(TOPIC_STATE, json, true);
+  if (n > 0 && n < sizeof(json) - 1) mqtt.publish(TOPIC_STATE.c_str(), json, true);
+}
+
+
+void publishPairing() {
+  if (!mqtt.connected()) return;
+  const char* code = SMARTSTIR_PAIRING_CODE;
+  size_t n = strlen(code);
+  if (n < 16 || n > 64) return; // Legacy devices do not broadcast a claim.
+  JsonDocument doc;
+  doc["device_id"] = DEVICE_ID;
+  doc["pairing_code"] = code;
+  char payload[190];
+  size_t written = serializeJson(doc, payload, sizeof(payload));
+  if (written > 0 && written < sizeof(payload) - 1)
+    mqtt.publish(TOPIC_PAIR.c_str(), payload, false);
 }
 
 void publishAck(const char *id, const char *status, const char *error = nullptr) {
@@ -221,15 +251,16 @@ void publishAck(const char *id, const char *status, const char *error = nullptr)
   doc["status"] = status;
   doc["applied_pwm_percent"] = pwmPercent;
   doc["motor_enabled"] = motorEnabled;
+  doc["sample_interval_ms"] = reportIntervalMs;
   if (error) doc["error_code"] = error;
   else doc["error_code"] = nullptr;
   char json[360];
   size_t n = serializeJson(doc, json, sizeof(json));
-  if (n > 0 && n < sizeof(json) - 1) mqtt.publish(TOPIC_ACK, json, false);
+  if (n > 0 && n < sizeof(json) - 1) mqtt.publish(TOPIC_ACK.c_str(), json, false);
 }
 
 void handleMqtt(char* topic, byte* payload, unsigned int length) {
-  if (strcmp(topic, TOPIC_COMMAND) != 0 || length > 512) return;
+  if (strcmp(topic, TOPIC_COMMAND.c_str()) != 0 || length > 512) return;
   JsonDocument doc;
   if (deserializeJson(doc, payload, length)) return;
   String id = doc["command_id"] | "";
@@ -275,6 +306,30 @@ void handleMqtt(char* topic, byte* payload, unsigned int length) {
     publishAck(id.c_str(), "APPLIED");
     publishState();
     Serial.printf("MQTT command: SET_PWM %u%%\n", pwmPercent);
+  } else if (command == "SET_SAMPLE_INTERVAL") {
+    if (!doc["value"].is<int>()) {
+      publishAck(id.c_str(), "REJECTED", "INVALID_INTERVAL");
+      return;
+    }
+    const int valueSeconds = doc["value"].as<int>();
+    if (valueSeconds != 1 && valueSeconds != 3 &&
+        valueSeconds != 5 && valueSeconds != 10) {
+      publishAck(id.c_str(), "REJECTED", "INVALID_INTERVAL");
+      return;
+    }
+    const uint32_t nextMs = (uint32_t)valueSeconds * 1000UL;
+    if (nextMs != reportIntervalMs) {
+      reportIntervalMs = nextMs;
+      Preferences settings;
+      if (settings.begin("smartstir", false)) {
+        settings.putUInt("sample_ms", reportIntervalMs);
+        settings.end();
+      }
+    }
+    lastReportMs = millis();
+    publishAck(id.c_str(), "APPLIED");
+    publishState();
+    Serial.printf("MQTT command: SET_SAMPLE_INTERVAL %ds\n", valueSeconds);
   } else if (command == "START") {
     if (pwmPercent == 0 || !mqtt.connected() || WiFi.status() != WL_CONNECTED) {
       publishAck(id.c_str(), "REJECTED", "PWM_ZERO_OR_NOT_CONNECTED");
@@ -314,6 +369,17 @@ void setup() {
 #endif
   motorStop();
 
+  Preferences settings;
+  if (settings.begin("smartstir", true)) {
+    reportIntervalMs = settings.getUInt("sample_ms", DEFAULT_REPORT_INTERVAL_MS);
+    settings.end();
+  }
+  if (reportIntervalMs != 1000UL && reportIntervalMs != 3000UL &&
+      reportIntervalMs != 5000UL && reportIntervalMs != 10000UL) {
+    reportIntervalMs = DEFAULT_REPORT_INTERVAL_MS;
+  }
+  Serial.printf("Sampling interval: %lu ms\n", (unsigned long)reportIntervalMs);
+
 #if SMARTSTIR_USE_HALL
   pinMode(HALL_PIN, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(HALL_PIN), hallSensorISR, FALLING);
@@ -335,7 +401,12 @@ void setup() {
   mqtt.setBufferSize(768);
   mqtt.setKeepAlive(20);
   mqtt.setSocketTimeout(5);
-  Serial.println("SmartStir EMQX v1.2.1 ready; motor OFF; no GPIO32 switch.");
+  Serial.println("SmartStir EMQX v1.3.0 ready; motor OFF; no GPIO32 switch.");
+  Serial.print("Device ID: "); Serial.println(DEVICE_ID);
+  if (strlen(SMARTSTIR_PAIRING_CODE) >= 16) {
+    Serial.print("Pairing code (keep private): ");
+    Serial.println(SMARTSTIR_PAIRING_CODE);
+  }
   Serial.println("Wi-Fi connecting (ESP32 needs 2.4 GHz)...");
 }
 
@@ -367,11 +438,13 @@ void loop() {
       lastMqttAttemptMs = millis();
       Serial.println("Connecting EMQX Cloud over TLS:8883...");
       bool ok = mqtt.connect(DEVICE_ID, MQTT_USER, MQTT_PASSWORD,
-                             TOPIC_PRESENCE, 1, true, "offline", true);
+                             TOPIC_PRESENCE.c_str(), 1, true, "offline", true);
       if (ok) {
-        bool subOk = mqtt.subscribe(TOPIC_COMMAND, 1);
-        mqtt.publish(TOPIC_PRESENCE, "online", true);
+        bool subOk = mqtt.subscribe(TOPIC_COMMAND.c_str(), 1);
+        mqtt.publish(TOPIC_PRESENCE.c_str(), "online", true);
         publishState();
+        publishPairing();
+        lastPairingMs = millis();
         Serial.println(subOk ? "MQTT TLS online; subscribe request sent" :
                    "MQTT TLS online; subscribe request failed locally");
       } else {
@@ -384,7 +457,11 @@ void loop() {
   }
 
   mqtt.loop();
-  if (millis() - lastReportMs > REPORT_INTERVAL_MS) {
+  if (millis() - lastPairingMs > 30000UL) {
+    lastPairingMs = millis();
+    publishPairing();
+  }
+  if (millis() - lastReportMs >= reportIntervalMs) {
     lastReportMs = millis();
     publishState();
   }

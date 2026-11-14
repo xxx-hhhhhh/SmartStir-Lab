@@ -1,0 +1,52 @@
+name: Gateway V1.3 PostgreSQL integration
+on:
+  push:
+    branches: [feature/labs-users-i18n-v1.3]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  api-smoke:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: smartstir
+          POSTGRES_PASSWORD: test_password_only
+          POSTGRES_DB: smartstir_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U smartstir -d smartstir_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.4'
+      - name: Install cloud runtime dependencies
+        working-directory: cloud
+        run: bun install
+      - name: Boot gateway against disposable test database
+        env:
+          DATABASE_URL: postgres://smartstir:test_password_only@127.0.0.1:5432/smartstir_test
+        run: |
+          bun cloud/gateway-v1.3.ts > /tmp/gateway.log 2>&1 &
+          for i in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3000/health >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/gateway.log
+          exit 1
+      - name: Run API integration tests
+        env:
+          DATABASE_URL: postgres://smartstir:test_password_only@127.0.0.1:5432/smartstir_test
+        run: python3 cloud/tests/smoke_test.py
+      - name: Gateway log on failure
+        if: failure()
+        run: cat /tmp/gateway.log || true

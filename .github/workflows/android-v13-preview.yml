@@ -1,0 +1,82 @@
+name: Android V1.3 Preview APK
+on:
+  push:
+    branches: [feature/labs-users-i18n-v1.3]
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.9'
+          channel: stable
+          cache: true
+      - name: Generate Android platform project
+        working-directory: mobile
+        run: flutter create --org com.smartstir --project-name smartstir_lab --platforms=android .
+      - name: Delete Flutter template widget test
+        working-directory: mobile
+        run: rm -f test/widget_test.dart
+      - name: Ensure internet permission
+        working-directory: mobile
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path=Path('android/app/src/main/AndroidManifest.xml')
+          src=path.read_text()
+          if 'android.permission.INTERNET' not in src:
+              src=src.replace('<application','<uses-permission android:name="android.permission.INTERNET" />\n    <application',1)
+              path.write_text(src)
+          PY
+      - name: Pub get
+        working-directory: mobile
+        run: flutter pub get
+      - name: Static analysis
+        working-directory: mobile
+        run: flutter analyze
+      - name: Unit tests
+        working-directory: mobile
+        run: flutter test
+      - name: Build debug preview APK
+        working-directory: mobile
+        run: flutter build apk --debug
+      - name: Copy output
+        run: |
+          mkdir -p dist
+          cp mobile/build/app/outputs/flutter-apk/app-debug.apk dist/SmartStir-Lab-v1.3.3-preview-debug.apk
+          (cd dist && sha256sum SmartStir-Lab-v1.3.3-preview-debug.apk > SHA256SUMS.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SmartStir-Lab-v1.3.3-preview-debug
+          path: dist/
+
+      - name: Publish V1.3 GitHub prerelease
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/feature/labs-users-i18n-v1.3') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'feature/labs-users-i18n-v1.3')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view v1.3.3-preview --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Prerelease already exists; leaving published assets unchanged."
+          else
+            gh release create v1.3.3-preview \
+              dist/SmartStir-Lab-v1.3.3-preview-debug.apk \
+              dist/SHA256SUMS.txt \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "feature/labs-users-i18n-v1.3" \
+              --prerelease \
+              --title "SmartStir Lab V1.3.3 · 实时记录与可调采样频率预览版" \
+              --notes "开发预览版：新增用户注册、创建和邀请实验室、ESP32 配对、多设备控制及中英日语言设置。APP 启动确认弹窗可选；ESP32 断网/180秒保护保持。默认连接 Railway V1.3 网关，新增实验过程实时状态曲线、记录表格、可选1/3/5/10秒采样频率、每次运行历史和 CSV 导出，服务器使用 PostgreSQL 存储，不依赖 SD 卡和 RTC；无需真实设备启动即可先检查界面。新 ESP32 须有独立 MQTT 账号与配对固件。原 V1.2.0 正式版不变。Debug 签名，仅用于测试。"
+          fi
