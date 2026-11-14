@@ -18,6 +18,7 @@ class _LabHomePageState extends State<LabHomePage> {
   List<Map<String,dynamic>> _invitations=[];
   final Map<String,List<Map<String,dynamic>>> _devices={};
   bool _loading=false;
+  bool _legacyMode=false;
   String? _error;
 
   @override
@@ -35,11 +36,29 @@ class _LabHomePageState extends State<LabHomePage> {
         l['id'].toString(),await widget.api.labDevices(l['id'].toString()))));
       if(!mounted)return;
       setState((){
+        _legacyMode=false;
         _labs=labs;_invitations=invites;
         _devices..clear()..addEntries(devicePairs);
       });
-    }catch(e){if(mounted)setState(()=>_error=e.toString());}
-    finally{if(mounted)setState(()=>_loading=false);}
+    }catch(e){
+      if(e is ApiError && e.statusCode==404) {
+        try {
+          final status=await widget.api.device();
+          if(mounted) {
+            setState((){
+              _legacyMode=true;
+              _labs=[{'id':'legacy','name':'实验室 01','role':'legacy'}];
+              _invitations=[];
+              _devices..clear()..['legacy']=[{
+                'device_id':'stirrer-001','label':'SmartStir 01',
+                'online':status['online']==true
+              }];
+              _error=null;
+            });
+          }
+        }catch(error){if(mounted)setState(()=>_error=error.toString());}
+      }else if(mounted){setState(()=>_error=e.toString());}
+    }finally{if(mounted)setState(()=>_loading=false);}
   }
 
   Future<String?> _prompt(String title,String label) async {
@@ -163,11 +182,14 @@ class _LabHomePageState extends State<LabHomePage> {
               MaterialPageRoute(builder:(_)=>const AppSettingsPage()))),
           IconButton(tooltip:L.t('logout'),icon:const Icon(Icons.logout),onPressed:_logout),
         ]),
-      floatingActionButton:FloatingActionButton.extended(
+      floatingActionButton:_legacyMode?null:FloatingActionButton.extended(
         icon:const Icon(Icons.add),label:Text(L.t('create_lab')),onPressed:_createLab),
       body:RefreshIndicator(onRefresh:_refresh,child:ListView(
         padding:const EdgeInsets.fromLTRB(16,16,16,100),children:[
           if(_loading)const LinearProgressIndicator(),
+          if(_legacyMode)Card(child:Padding(
+            padding:const EdgeInsets.all(16),
+            child:Text(L.t('legacy_gateway')))),
           if(_error!=null)Card(child:ListTile(
             leading:const Icon(Icons.error_outline,color:Colors.red),
             title:Text(_error!))),
@@ -201,12 +223,12 @@ class _LabHomePageState extends State<LabHomePage> {
                     const Icon(Icons.science_outlined,size:28,color:Color(0xFF1B365D)),
                     const SizedBox(width:8),
                     Expanded(child:Text(name,style:Theme.of(context).textTheme.titleLarge)),
-                    Chip(label:Text(L.t(role=='owner'?'owner':'member'))),
+                    Chip(label:Text(L.t(role=='owner'?'owner':role=='legacy'?'legacy_label':'member'))),
                   ]),
                   const SizedBox(height:8),
                   Row(children:[
                     Expanded(child:Text('${L.t('devices')}: ${devs.length}')),
-                    TextButton.icon(
+                    if(!_legacyMode)TextButton.icon(
                       icon:const Icon(Icons.group_outlined,size:18),
                       onPressed:()=>_showMembers(labId),
                       label:Text(L.t('members'))),
