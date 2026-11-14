@@ -43,19 +43,17 @@ class _LabHomePageState extends State<LabHomePage> {
   }
 
   Future<String?> _prompt(String title,String label) async {
-    final controller=TextEditingController();
+    String value='';
     final result=await showDialog<String>(context:context,builder:(ctx)=>AlertDialog(
       title:Text(title),
-      content:TextField(controller:controller,autofocus:true,
+      content:TextField(autofocus:true,onChanged:(text)=>value=text,
         decoration:InputDecoration(labelText:label)),
       actions:[
         TextButton(onPressed:()=>Navigator.pop(ctx),child:Text(L.t('cancel'))),
-        FilledButton(onPressed:()=>Navigator.pop(ctx,controller.text.trim()),
+        FilledButton(onPressed:()=>Navigator.pop(ctx,value.trim()),
           child:Text(L.t('submit'))),
       ],
     ));
-    // TextEditingController is intentionally released after the dialog closes.
-    controller.dispose();
     return result?.trim().isNotEmpty==true?result!.trim():null;
   }
 
@@ -82,19 +80,17 @@ class _LabHomePageState extends State<LabHomePage> {
   }
 
   Future<void> _addDevice(String labId) async {
-    final id=TextEditingController();
-    final label=TextEditingController();
-    final code=TextEditingController();
+    String id='',label='',code='';
     final data=await showDialog<Map<String,String>>(context:context,builder:(ctx)=>AlertDialog(
       title:Text(L.t('add_device')),
       scrollable:true,
       content:Column(mainAxisSize:MainAxisSize.min,children:[
-        TextField(controller:id,autofocus:true,
+        TextField(onChanged:(v)=>id=v,autofocus:true,
           decoration:InputDecoration(labelText:L.t('device_id'))),
         const SizedBox(height:12),
-        TextField(controller:label,decoration:InputDecoration(labelText:L.t('device_name'))),
+        TextField(onChanged:(v)=>label=v,decoration:InputDecoration(labelText:L.t('device_name'))),
         const SizedBox(height:12),
-        TextField(controller:code,
+        TextField(onChanged:(v)=>code=v,
           decoration:InputDecoration(labelText:L.t('pairing_code'))),
         const SizedBox(height:12),
         Text(L.t('pair_hint'),style:const TextStyle(fontSize:12,color:Color(0xFF64748B))),
@@ -102,11 +98,10 @@ class _LabHomePageState extends State<LabHomePage> {
       actions:[
         TextButton(onPressed:()=>Navigator.pop(ctx),child:Text(L.t('cancel'))),
         FilledButton(onPressed:()=>Navigator.pop(ctx,{
-          'id':id.text.trim(),'label':label.text.trim(),'code':code.text.trim()
+          'id':id.trim(),'label':label.trim(),'code':code.trim()
         }),child:Text(L.t('submit'))),
       ],
     ));
-    id.dispose();label.dispose();code.dispose();
     if(data==null||!mounted)return;
     await _perform(()async{
       await widget.api.addDevice(labId,data['id']!,data['code']!,data['label']!);
