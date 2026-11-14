@@ -56,11 +56,11 @@ jobs:
       - name: Copy output
         run: |
           mkdir -p dist
-          cp mobile/build/app/outputs/flutter-apk/app-debug.apk dist/SmartStir-Lab-v1.3.1-preview-debug.apk
-          (cd dist && sha256sum SmartStir-Lab-v1.3.1-preview-debug.apk > SHA256SUMS.txt)
+          cp mobile/build/app/outputs/flutter-apk/app-debug.apk dist/SmartStir-Lab-v1.3.2-preview-debug.apk
+          (cd dist && sha256sum SmartStir-Lab-v1.3.2-preview-debug.apk > SHA256SUMS.txt)
       - uses: actions/upload-artifact@v4
         with:
-          name: SmartStir-Lab-v1.3.1-preview-debug
+          name: SmartStir-Lab-v1.3.2-preview-debug
           path: dist/
 
       - name: Publish V1.3 GitHub prerelease
@@ -68,15 +68,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v1.3.1-preview --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          if gh release view v1.3.2-preview --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Prerelease already exists; leaving published assets unchanged."
           else
-            gh release create v1.3.1-preview \
-              dist/SmartStir-Lab-v1.3.1-preview-debug.apk \
+            gh release create v1.3.2-preview \
+              dist/SmartStir-Lab-v1.3.2-preview-debug.apk \
               dist/SHA256SUMS.txt \
               --repo "$GITHUB_REPOSITORY" \
               --target "feature/labs-users-i18n-v1.3" \
               --prerelease \
-              --title "SmartStir Lab V1.3.1 · 已接入 Railway V1.3 网关预览版" \
-              --notes "开发预览版：新增用户注册、创建和邀请实验室、ESP32 配对、多设备控制及中英日语言设置。APP 启动确认弹窗可选；ESP32 断网/180秒保护保持。已默认连接 Railway V1.3 网关及 PostgreSQL，支持注册与实验室管理；新增 ESP32 前仍需配置 EMQX 多设备 ACL 和配对固件。原 V1.2.0 正式版不变。Debug 签名，仅用于测试。"
+              --title "SmartStir Lab V1.3.2 · 实验运行记录与 CSV 导出预览版" \
+              --notes "开发预览版：新增用户注册、创建和邀请实验室、ESP32 配对、多设备控制及中英日语言设置。APP 启动确认弹窗可选；ESP32 断网/180秒保护保持。默认连接 Railway V1.3 网关，新增实验过程自动记录、每次运行历史和 CSV 导出，服务器使用 PostgreSQL 存储，不依赖 SD 卡和 RTC；无需真实设备启动即可先检查界面。新 ESP32 须有独立 MQTT 账号与配对固件。原 V1.2.0 正式版不变。Debug 签名，仅用于测试。"
           fi
