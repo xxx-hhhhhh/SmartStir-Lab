@@ -44,6 +44,8 @@ jobs:
           cat /tmp/gateway.log
           exit 1
       - name: Run API integration tests
+        env:
+          DATABASE_URL: postgres://smartstir:test_password_only@127.0.0.1:5432/smartstir_test
         run: python3 cloud/tests/smoke_test.py
       - name: Gateway log on failure
         if: failure()
