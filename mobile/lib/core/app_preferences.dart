@@ -114,5 +114,15 @@ class L {
     'download_update': {'zh':'下载并更新','en':'Download update','ja':'更新をダウンロード'},
     'browser_error': {'zh':'无法打开浏览器，请稍后重试','en':'Unable to open browser. Try again.','ja':'ブラウザを開けません。後ほどお試しください。'},
     'update_error': {'zh':'检查更新失败','en':'Update check failed','ja':'更新の確認に失敗しました'},
+    'server_upgrade_required': {'zh':'当前服务器尚未升级到 V1.3，暂不支持注册。','en':'This server has not been upgraded to V1.3; registration is unavailable.','ja':'サーバーはまだV1.3に更新されていないため登録できません。'},
+    'username_taken': {'zh':'用户名已被使用','en':'Username is taken','ja':'ユーザー名は使用されています'},
+    'bad_credentials': {'zh':'用户名或密码错误','en':'Incorrect username or password','ja':'ユーザー名かパスワードが正しくありません'},
+    'owner_only': {'zh':'仅实验室创建者可以执行此操作','en':'Only laboratory owners can do this','ja':'実験室オーナーのみ操作できます'},
+    'lab_missing': {'zh':'实验室不存在或无访问权限','en':'Laboratory not found or access denied','ja':'実験室が存在しないか権限がありません'},
+    'device_claimed': {'zh':'该 ESP32 已被其他实验室绑定','en':'This ESP32 is already claimed','ja':'このESP32は既に登録済みです'},
+    'pairing_failed': {'zh':'没有找到设备的有效配对证明；请先让 ESP32 联网并重试','en':'No current pairing proof. Connect ESP32 to MQTT and retry.','ja':'有効なペアリング情報がありません。ESP32を接続して再試行してください'},
+    'device_missing': {'zh':'未找到设备或无访问权限','en':'Device not found or access denied','ja':'デバイスが存在しないか権限がありません'},
+    'username_missing': {'zh':'未找到该注册用户','en':'Registered user not found','ja':'登録済みユーザーが見つかりません'},
+    'mqtt_unavailable': {'zh':'云端 MQTT 暂时离线','en':'Cloud MQTT is offline','ja':'クラウドMQTTはオフラインです'},
   };
 }
