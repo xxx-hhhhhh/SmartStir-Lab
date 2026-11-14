@@ -12,9 +12,10 @@ class AppSettingsPage extends StatelessWidget {
         Card(child:Padding(padding:const EdgeInsets.all(12),child:Column(
           crossAxisAlignment:CrossAxisAlignment.start,children:[
             ListTile(title:Text(L.t('language')),leading:const Icon(Icons.language)),
-            ...['zh','en','ja'].map((code)=>RadioListTile<String>(
-              value:code,groupValue:AppPrefs.language.value,
-              title:Text(L.t(code)),onChanged:(v){if(v!=null)AppPrefs.setLanguage(v);},
+            ...['zh','en','ja'].map((code)=>ListTile(
+              title:Text(L.t(code)),
+              trailing:code==AppPrefs.language.value?const Icon(Icons.check):null,
+              onTap:()=>AppPrefs.setLanguage(code),
             )),
           ]))),
         const SizedBox(height:12),
