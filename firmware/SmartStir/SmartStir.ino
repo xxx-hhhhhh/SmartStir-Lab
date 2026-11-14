@@ -16,6 +16,7 @@
 #include <WiFiClientSecure.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>
 #include <time.h>
 #include "secrets.h"
 
@@ -86,8 +87,9 @@ const String TOPIC_PRESENCE = TOPIC_PREFIX + "/presence";
 const String TOPIC_PAIR = TOPIC_PREFIX + "/pair";
 
 const unsigned long MAX_RUN_MS = 180000UL;
-// 1 Hz real sampling for live APP telemetry; ESP32 must be reflashed.
-const unsigned long REPORT_INTERVAL_MS = 1000UL;
+// 3 seconds by default; APP can select 1/3/5/10 s, saved in ESP32 NVS.
+const unsigned long DEFAULT_REPORT_INTERVAL_MS = 3000UL;
+uint32_t reportIntervalMs = DEFAULT_REPORT_INTERVAL_MS;
 const unsigned long WIFI_RETRY_INTERVAL_MS = 8000UL;
 const unsigned long MQTT_RETRY_INTERVAL_MS = 8000UL;
 
@@ -220,6 +222,7 @@ void publishState() {
   doc["actual_rpm"] = nullptr;
 #endif
   doc["uptime_ms"] = millis();
+  doc["sample_interval_ms"] = reportIntervalMs;
   doc["fault"] = nullptr;
   char json[420];
   size_t n = serializeJson(doc, json, sizeof(json));
@@ -248,6 +251,7 @@ void publishAck(const char *id, const char *status, const char *error = nullptr)
   doc["status"] = status;
   doc["applied_pwm_percent"] = pwmPercent;
   doc["motor_enabled"] = motorEnabled;
+  doc["sample_interval_ms"] = reportIntervalMs;
   if (error) doc["error_code"] = error;
   else doc["error_code"] = nullptr;
   char json[360];
@@ -302,6 +306,30 @@ void handleMqtt(char* topic, byte* payload, unsigned int length) {
     publishAck(id.c_str(), "APPLIED");
     publishState();
     Serial.printf("MQTT command: SET_PWM %u%%\n", pwmPercent);
+  } else if (command == "SET_SAMPLE_INTERVAL") {
+    if (!doc["value"].is<int>()) {
+      publishAck(id.c_str(), "REJECTED", "INVALID_INTERVAL");
+      return;
+    }
+    const int valueSeconds = doc["value"].as<int>();
+    if (valueSeconds != 1 && valueSeconds != 3 &&
+        valueSeconds != 5 && valueSeconds != 10) {
+      publishAck(id.c_str(), "REJECTED", "INVALID_INTERVAL");
+      return;
+    }
+    const uint32_t nextMs = (uint32_t)valueSeconds * 1000UL;
+    if (nextMs != reportIntervalMs) {
+      reportIntervalMs = nextMs;
+      Preferences settings;
+      if (settings.begin("smartstir", false)) {
+        settings.putUInt("sample_ms", reportIntervalMs);
+        settings.end();
+      }
+    }
+    lastReportMs = millis();
+    publishAck(id.c_str(), "APPLIED");
+    publishState();
+    Serial.printf("MQTT command: SET_SAMPLE_INTERVAL %ds\n", valueSeconds);
   } else if (command == "START") {
     if (pwmPercent == 0 || !mqtt.connected() || WiFi.status() != WL_CONNECTED) {
       publishAck(id.c_str(), "REJECTED", "PWM_ZERO_OR_NOT_CONNECTED");
@@ -340,6 +368,17 @@ void setup() {
   ledcAttachPin(PWMA, PWM_CHANNEL);
 #endif
   motorStop();
+
+  Preferences settings;
+  if (settings.begin("smartstir", true)) {
+    reportIntervalMs = settings.getUInt("sample_ms", DEFAULT_REPORT_INTERVAL_MS);
+    settings.end();
+  }
+  if (reportIntervalMs != 1000UL && reportIntervalMs != 3000UL &&
+      reportIntervalMs != 5000UL && reportIntervalMs != 10000UL) {
+    reportIntervalMs = DEFAULT_REPORT_INTERVAL_MS;
+  }
+  Serial.printf("Sampling interval: %lu ms\n", (unsigned long)reportIntervalMs);
 
 #if SMARTSTIR_USE_HALL
   pinMode(HALL_PIN, INPUT_PULLUP);
@@ -422,7 +461,7 @@ void loop() {
     lastPairingMs = millis();
     publishPairing();
   }
-  if (millis() - lastReportMs > REPORT_INTERVAL_MS) {
+  if (millis() - lastReportMs >= reportIntervalMs) {
     lastReportMs = millis();
     publishState();
   }
