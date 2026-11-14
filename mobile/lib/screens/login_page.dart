@@ -58,7 +58,7 @@ class _LoginPageState extends State<LoginPage> {
           Text(L.t('app'),textAlign:TextAlign.center,
             style:const TextStyle(fontSize:30,fontWeight:FontWeight.w800,color:Color(0xFF1B365D))),
           const SizedBox(height: 5),
-          Text('${L.t('subtitle')} · V1.3.1',
+          Text('${L.t('subtitle')} · V1.3.2',
             textAlign: TextAlign.center,style: const TextStyle(color:Color(0xFF64748B))),
           const SizedBox(height: 24),
           Card(child: Padding(padding:const EdgeInsets.all(20),child:Column(
