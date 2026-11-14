@@ -69,7 +69,7 @@ class _TelemetryPainter extends CustomPainter {
       ..style=PaintingStyle.stroke..strokeCap=StrokeCap.round;
     final path=Path()..moveTo(x(0),y(0));
     for(var i=1;i<samples.length;i++){
-      final prevX=x(i-1),nextX=x(i);
+      final nextX=x(i);
       // A gap longer than 5s is visibly discontinuous, not invented data.
       if(times[i]-times[i-1]>math.max(5000,intervalMs*2.5)){
         canvas.drawPath(path,line);
