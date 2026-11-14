@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'app_preferences.dart';
 
 class ApiError implements Exception {
   ApiError(this.message, [this.statusCode]);
@@ -44,6 +45,10 @@ class SmartStirApi {
         .timeout(const Duration(seconds: 12));
       final data = _decodeMap(response);
       if (response.statusCode != 201) {
+        if (response.statusCode == 404 ||
+            (response.statusCode == 401 && data['detail'] == 'Login required')) {
+          throw ApiError(L.t('server_upgrade_required'), response.statusCode);
+        }
         throw ApiError(_extractError(data, response.statusCode), response.statusCode);
       }
       final token = data['access_token'];
@@ -87,7 +92,20 @@ class SmartStirApi {
 
   static String _extractError(Map<String, dynamic> data, int code) {
     final d = data['detail'];
-    if (d is String && d.isNotEmpty) return '$d（HTTP $code）';
+    if (d is String && d.isNotEmpty) {
+      final keys = <String, String>{
+        'Username is taken': 'username_taken',
+        'Invalid credentials': 'bad_credentials',
+        'Owner access required': 'owner_only',
+        'Laboratory not found': 'lab_missing',
+        'Device not found': 'device_missing',
+        'Registered user not found': 'username_missing',
+        'This ESP32 belongs to a laboratory': 'device_claimed',
+        'ESP32 pairing proof not found; connect firmware to MQTT and retry': 'pairing_failed',
+        'MQTT service offline': 'mqtt_unavailable',
+      };
+      return '${L.t(keys[d] ?? d)} (HTTP $code)';
+    }
     return '网络请求失败：HTTP $code';
   }
 
