@@ -1,0 +1,69 @@
+name: Promote verified V1.3.3 APK to stable Release
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/promote-v133-stable.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  promote:
+    # This workflow is allowed only for the original repository's own V1.3 feature PR.
+    if: github.event_name == 'workflow_dispatch' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'feature/labs-users-i18n-v1.3')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      SOURCE_SHA: 1873d54eae935cf03d892a9b86ffbe7f32217400
+    steps:
+      - name: Download V1.3.3 pre-release APK and original checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p source stable
+          gh release download v1.3.3-preview --repo "$REPO" --dir source \
+            --pattern 'SmartStir-Lab-v1.3.3-preview-debug.apk' \
+            --pattern 'SHA256SUMS.txt'
+          (cd source && sha256sum --check SHA256SUMS.txt)
+          cp source/SmartStir-Lab-v1.3.3-preview-debug.apk \
+             stable/SmartStir-Lab-v1.3.3-debug.apk
+          (cd stable && sha256sum SmartStir-Lab-v1.3.3-debug.apk > SHA256SUMS.txt)
+          echo "Verified SHA256 (same bytes as Preview):"
+          cat stable/SHA256SUMS.txt
+      - name: Publish v1.3.3 stable release (unchanged APK)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view v1.3.3 --repo "$REPO" >/dev/null 2>&1; then
+            echo "Stable release v1.3.3 already exists; not overwriting anything."
+            exit 0
+          fi
+          sha256="$(cut -d ' ' -f1 stable/SHA256SUMS.txt)"
+          cat > release-notes.md <<EOF
+          # SmartStir Lab V1.3.3
+
+          正式 GitHub 更新通道发布。功能包括注册、实验室成员与设备管理、实时状态曲线、可选 1/3/5/10 秒采样频率、CSV 数据记录与导出、中英日语言切换。
+
+          **这仍是 Debug 签名 APK，部分设备可能无法覆盖安装旧版；如提示签名冲突，需要自行备份设置后卸载旧版再安装。本次没有宣称完成真实 ESP32 的端到端验收。**
+
+          ## 回退依据
+
+          - 本次源码 Git commit SHA: \`$SOURCE_SHA\`
+          - 本次 APK SHA-256: \`$sha256\`
+          - 原正式版本: \`v1.2.0\`
+          - 原 main commit SHA: \`9dcd20d8a0fcb4e9938c4d2da4a86f79fc161d36\`
+          - 本次使用的 APK 与 v1.3.3-preview 发布文件完全相同，已通过其原始 SHA256SUMS.txt 校验。
+          - 如果回退，只应撤销本次 GitHub Release 或恢复旧版作为 latest；不要自动重置或清除生产数据库。
+          EOF
+          gh release create v1.3.3 \
+            stable/SmartStir-Lab-v1.3.3-debug.apk \
+            stable/SHA256SUMS.txt \
+            --repo "$REPO" \
+            --target "$SOURCE_SHA" \
+            --title 'SmartStir Lab V1.3.3 · 稳定版更新入口' \
+            --notes-file release-notes.md \
+            --latest
+          gh release view v1.3.3 --repo "$REPO" --json tagName,isPrerelease,isDraft,isLatest,url \
+            --jq '{tag: .tagName, prerelease: .isPrerelease, draft: .isDraft, latest: .isLatest, url: .url}'
