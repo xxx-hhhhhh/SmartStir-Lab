@@ -180,6 +180,9 @@ class SmartStirApi {
   Future<List<Map<String,dynamic>>> experimentRuns() =>
       _getList('/api/v1/devices/${Uri.encodeComponent(deviceId)}/runs');
 
+  Future<List<Map<String,dynamic>>> experimentSamples(String runId) =>
+      _getList('/api/v1/devices/${Uri.encodeComponent(deviceId)}/runs/$runId/samples');
+
   Future<List<int>> experimentCsv(String runId) async {
     if (!RegExp(r'^[0-9a-f-]{36}$', caseSensitive: false).hasMatch(runId)) {
       throw ApiError('Invalid experiment ID');
