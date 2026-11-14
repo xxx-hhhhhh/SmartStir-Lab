@@ -86,7 +86,8 @@ const String TOPIC_PRESENCE = TOPIC_PREFIX + "/presence";
 const String TOPIC_PAIR = TOPIC_PREFIX + "/pair";
 
 const unsigned long MAX_RUN_MS = 180000UL;
-const unsigned long REPORT_INTERVAL_MS = 3000UL;
+// 1 Hz real sampling for live APP telemetry; ESP32 must be reflashed.
+const unsigned long REPORT_INTERVAL_MS = 1000UL;
 const unsigned long WIFI_RETRY_INTERVAL_MS = 8000UL;
 const unsigned long MQTT_RETRY_INTERVAL_MS = 8000UL;
 
