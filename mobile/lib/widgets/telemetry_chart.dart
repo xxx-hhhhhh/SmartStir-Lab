@@ -3,8 +3,9 @@ import 'package:flutter/material.dart';
 
 /// Plots only measured MQTT state samples. Missing seconds are NEVER synthesized.
 class TelemetryChart extends StatelessWidget {
-  const TelemetryChart({super.key, required this.samples});
+  const TelemetryChart({super.key, required this.samples, this.intervalMs=3000});
   final List<Map<String,dynamic>> samples;
+  final int intervalMs;
 
   @override
   Widget build(BuildContext context) {
@@ -17,7 +18,7 @@ class TelemetryChart extends StatelessWidget {
     }
     return Column(crossAxisAlignment:CrossAxisAlignment.start,children:[
       SizedBox(height:190,child:CustomPaint(
-        painter:_TelemetryPainter(valid,Theme.of(context).colorScheme.primary),
+        painter:_TelemetryPainter(valid,Theme.of(context).colorScheme.primary,intervalMs),
         child:const SizedBox.expand())),
       const SizedBox(height:8),
       Row(children:[
@@ -33,9 +34,10 @@ class TelemetryChart extends StatelessWidget {
 }
 
 class _TelemetryPainter extends CustomPainter {
-  _TelemetryPainter(this.samples,this.color);
+  _TelemetryPainter(this.samples,this.color,this.intervalMs);
   final List<Map<String,dynamic>> samples;
   final Color color;
+  final int intervalMs;
 
   @override
   void paint(Canvas canvas,Size size) {
@@ -69,7 +71,7 @@ class _TelemetryPainter extends CustomPainter {
     for(var i=1;i<samples.length;i++){
       final prevX=x(i-1),nextX=x(i);
       // A gap longer than 5s is visibly discontinuous, not invented data.
-      if(times[i]-times[i-1]>5000){
+      if(times[i]-times[i-1]>math.max(5000,intervalMs*2.5)){
         canvas.drawPath(path,line);
         path.reset();
         path.moveTo(nextX,y(i));
@@ -94,5 +96,5 @@ class _TelemetryPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _TelemetryPainter old)=>
-    old.samples!=samples||old.color!=color;
+    old.samples!=samples||old.color!=color||old.intervalMs!=intervalMs;
 }
