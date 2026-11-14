@@ -215,9 +215,6 @@ class _WorkspacePageState extends State<WorkspacePage> {
             ],
           ],
         ))),
-        const SizedBox(height:12),
-        Text(L.t('safety_note'),style:const TextStyle(
-          color:Color(0xFF64748B),fontSize:12)),
       ],
     ));
   }
