@@ -29,7 +29,11 @@ class SmartStirApp extends StatelessWidget {
       title: L.t('app'),
       locale: Locale(lang),
       supportedLocales: const [Locale('zh'),Locale('en'),Locale('ja')],
-      localizationsDelegates: GlobalMaterialLocalizations.delegates,
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         useMaterial3: true,
