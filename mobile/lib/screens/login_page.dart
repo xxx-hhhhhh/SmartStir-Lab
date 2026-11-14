@@ -73,7 +73,7 @@ class _LoginPageState extends State<LoginPage> {
                 decoration:InputDecoration(labelText:L.t('username'),prefixIcon:const Icon(Icons.person_outline))),
               const SizedBox(height:12),
               TextField(controller:_password,obscureText:_obscure,
-                onSubmitted:(_) => _register ? null : _submit(),
+                onSubmitted:(_) { if (!_register) _submit(); },
                 decoration:InputDecoration(labelText:L.t('password'),
                   helperText:_register?L.t('password_note'):null,
                   prefixIcon:const Icon(Icons.lock_outline),
