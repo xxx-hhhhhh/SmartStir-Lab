@@ -21,10 +21,19 @@ class _LabHomePageState extends State<LabHomePage> {
   bool _legacyMode=false;
   String? _error;
 
+  void _languageChanged(){if(mounted)setState((){});}
   @override
-  void initState(){super.initState();_refresh();}
+  void initState(){
+    super.initState();
+    AppPrefs.language.addListener(_languageChanged);
+    _refresh();
+  }
   @override
-  void dispose(){widget.api.close();super.dispose();}
+  void dispose(){
+    AppPrefs.language.removeListener(_languageChanged);
+    widget.api.close();
+    super.dispose();
+  }
 
   Future<void> _refresh() async {
     if(_loading)return;
