@@ -482,21 +482,54 @@ class _WorkspacePageState extends State<WorkspacePage> {
             Row(children:[
               Expanded(child:Text(L.t('pwm'),
                 style:const TextStyle(fontWeight:FontWeight.w700))),
-              Text('${_pwm.round()}%',style:const TextStyle(
+              Text('${_pwm.toStringAsFixed(1)}%',style:const TextStyle(
                 fontSize:22,fontWeight:FontWeight.w800)),
             ]),
-            Slider(value:_pwm,min:0,max:100,divisions:20,
-              onChanged:_busy?null:(v)=>setState(()=>_pwm=v)),
+            Slider(value:_pwm,min:0,max:100,divisions:1000,
+              label:'${_pwm.toStringAsFixed(1)}%',
+              onChanged:_busy?null:_changePwm),
             Row(mainAxisAlignment:MainAxisAlignment.spaceBetween,children:[
               const Text('0%'),const Text('100%'),
             ]),
+            const SizedBox(height:12),
+            Row(children:[
+              IconButton.outlined(
+                tooltip:L.t('pwm_decrease'),
+                onPressed:_busy?null:()=>_changePwm(_pwm-0.1),
+                icon:const Icon(Icons.remove)),
+              const SizedBox(width:8),
+              Expanded(child:TextField(
+                controller:_pwmInput,
+                enabled:!_busy,
+                keyboardType:const TextInputType.numberWithOptions(decimal:true),
+                textInputAction:TextInputAction.done,
+                decoration:InputDecoration(labelText:L.t('pwm_input'),
+                  suffixText:'%',isDense:true),
+                onChanged:(raw){
+                  final v=double.tryParse(raw.trim().replaceAll(',','.'));
+                  if(v!=null&&v>=0&&v<=100&&
+                     ((v*10)-(v*10).round()).abs()<0.000001) {
+                    setState(()=>_pwm=(v*10).round()/10.0);
+                  }
+                },
+                onSubmitted:(_){if(canOperate)_applyPwm();},
+              )),
+              const SizedBox(width:8),
+              IconButton.outlined(
+                tooltip:L.t('pwm_increase'),
+                onPressed:_busy?null:()=>_changePwm(_pwm+0.1),
+                icon:const Icon(Icons.add)),
+            ]),
+            const SizedBox(height:6),
+            Text(L.t('pwm_apply_hint'),style:const TextStyle(
+              fontSize:12,color:Color(0xFF64748B))),
             const SizedBox(height:10),
             OutlinedButton.icon(
-              onPressed:canOperate?()=>_send('SET_PWM',_pwm.round()):null,
+              onPressed:canOperate?_applyPwm:null,
               icon:const Icon(Icons.tune),label:Text(L.t('set_pwm'))),
             const SizedBox(height:12),
             FilledButton.icon(
-              onPressed:canOperate&&_pwm>0?()=>_send('START'):null,
+              onPressed:canOperate&&(_device?['pwm_percent'] is num)&&(_device!['pwm_percent'] as num)>0?()=>_send('START'):null,
               icon:const Icon(Icons.play_arrow),label:Text(L.t('start')),
               style:FilledButton.styleFrom(minimumSize:const Size.fromHeight(48))),
             const SizedBox(height:9),
