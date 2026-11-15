@@ -382,7 +382,9 @@ class _WorkspacePageState extends State<WorkspacePage> {
       if(mounted&&generation==_generation){
         final verb=command=='SET_PWM'?L.t('set_pwm'):command=='SET_SAMPLE_INTERVAL'
             ?L.t('sample_interval'):command=='START'?L.t('start'):L.t('stop');
-        setState(()=>_action='$verb: ${L.t('ack_${status.toLowerCase()}')}${detail.isEmpty?'':' ($detail)'}');
+        final reasonKey='err_${detail.toLowerCase()}';
+        final reason=L.t(reasonKey)==reasonKey?L.t('err_generic'):L.t(reasonKey);
+        setState(()=>_action='$verb: ${L.t('ack_${status.toLowerCase()}')}${detail.isEmpty?'':' ($reason)'}');
       }
       await _refresh();
     }catch(e){
