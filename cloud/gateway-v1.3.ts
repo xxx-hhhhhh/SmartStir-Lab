@@ -287,12 +287,15 @@ async function handleMqtt(topic,payload,retained=false) {
     return;
   }
   if(kind==="state"){
+    // A retained MQTT snapshot is not proof of a currently running motor.
+    // Wait for a fresh live message before reporting online or opening a run.
+    if(retained)return;
     const s=states.get(deviceId)||{};
     for(const key of ["motor_enabled","pwm_percent","actual_rpm","armed","fault","sample_interval_ms"])
       if(Object.prototype.hasOwnProperty.call(obj,key))s[key]=obj[key];
     s.lastSeen=now();s.lastStateAt=now();
     states.set(deviceId,s);
-    if(!retained){
+    {
       const previous=stateWriteQueues.get(deviceId)||Promise.resolve();
       const next=previous.catch(()=>{}).then(()=>recordExperimentState(deviceId,obj));
       stateWriteQueues.set(deviceId,next);
