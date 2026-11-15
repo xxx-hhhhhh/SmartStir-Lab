@@ -181,6 +181,42 @@ function csvCell(value) {
   return '"'+str.replaceAll('"','""')+'"';
 }
 
+
+const eventLabels={
+  zh:{START:"启动电机",STOP:"停止电机",SET_PWM:"调整 PWM",SET_SAMPLE_INTERVAL:"设置采样间隔",
+    command_sent:"已点击按钮并下发",command_ack:"ESP32 执行反馈",command_rejected:"操作未发送",command_failed:"发送失败",
+    device_event:"设备事件",APPLIED:"执行成功",REJECTED:"设备拒绝",FAILED:"失败",DUPLICATE:"重复指令",
+    PENDING:"等待确认",TIMEOUT:"确认超时",DEVICE_OFFLINE:"设备离线",MQTT_OFFLINE:"云端 MQTT 离线",
+    MQTT_PUBLISH_FAILED:"MQTT 发送失败",UNKNOWN:"未知事件"},
+  en:{START:"Start motor",STOP:"Stop motor",SET_PWM:"Set PWM",SET_SAMPLE_INTERVAL:"Set sample interval",
+    command_sent:"Button pressed / command sent",command_ack:"ESP32 acknowledgement",command_rejected:"Not sent",
+    command_failed:"Publish failed",device_event:"Device event",APPLIED:"Applied",REJECTED:"Rejected",FAILED:"Failed",
+    DUPLICATE:"Duplicate",PENDING:"Awaiting acknowledgement",TIMEOUT:"Timed out",DEVICE_OFFLINE:"Device offline",
+    MQTT_OFFLINE:"Cloud MQTT offline",MQTT_PUBLISH_FAILED:"MQTT publish failed",UNKNOWN:"Unknown event"},
+  ja:{START:"モーター起動",STOP:"モーター停止",SET_PWM:"PWM設定",SET_SAMPLE_INTERVAL:"サンプル間隔設定",
+    command_sent:"ボタン操作・送信",command_ack:"ESP32応答",command_rejected:"送信されませんでした",
+    command_failed:"送信失敗",device_event:"デバイスイベント",APPLIED:"適用済み",REJECTED:"拒否",FAILED:"失敗",
+    DUPLICATE:"重複",PENDING:"確認待ち",TIMEOUT:"タイムアウト",DEVICE_OFFLINE:"オフライン",
+    MQTT_OFFLINE:"MQTTオフライン",MQTT_PUBLISH_FAILED:"MQTT送信失敗",UNKNOWN:"不明なイベント"},
+};
+const eventSelect="SELECT e.kind,e.data_json,e.created_at,c.command,c.value,c.status,u.username AS operator FROM device_events e LEFT JOIN commands c ON c.device_id=e.device_id AND c.command_id::text=(e.data_json::jsonb->>'command_id') LEFT JOIN users u ON u.id=c.user_id WHERE e.device_id=$1 ORDER BY e.created_at DESC,e.id DESC";
+function presentEvent(row,language){
+  const words=eventLabels[language]||eventLabels.zh;
+  let data={};try{data=JSON.parse(row.data_json||"{}");}catch{}
+  const command=row.command||data.command||null;
+  const value=row.value??data.value??null;
+  const operator=row.operator||data.user||null;
+  const rawStatus=(row.kind==="command_ack"?data.status:row.status)||data.reason||null;
+  const status=rawStatus==="PENDING" && now()-Number(row.created_at)>12?"TIMEOUT":rawStatus;
+  const action=command?(words[command]||command)+
+    (value==null?"":command==="SET_PWM"?" "+Number(value).toFixed(1)+"%":
+      command==="SET_SAMPLE_INTERVAL"?" "+value+"s":""):(words[row.kind]||words.UNKNOWN);
+  return {...row,operator,command,value,status,
+    action,summary:(words[row.kind]||words.UNKNOWN)+(command?" · "+action:"")+
+      (status?" · "+(words[status]||status):""),
+    error_code:data.error_code||data.reason||null};
+}
+
 const client = env.MQTT_HOST && env.MQTT_USER && env.MQTT_PASSWORD
   ? mqtt.connect("mqtts://" + env.MQTT_HOST + ":" + (env.MQTT_PORT||"8883"),{
     clientId:"smartstir-gateway-v13-" + randomBytes(5).toString("hex"),
@@ -447,13 +483,37 @@ Bun.serve({
           "x-content-type-options":"nosniff"
         }});
       }
+
+      // Full audit export, scoped to the caller's laboratory membership.
+      const eventsCsvPath=path.match(/^\/api\/v1\/devices\/([a-z0-9-]+)\/events\.csv$/i);
+      if(eventsCsvPath&&method==="GET"){
+        const deviceId=eventsCsvPath[1];
+        if(!await belongs(user.id,deviceId))return err("Device not found",404);
+        const language=["zh","en","ja"].includes(url.searchParams.get("lang"))?url.searchParams.get("lang"):"zh";
+        const rows=await q(eventSelect+" LIMIT 50001",[deviceId]);
+        if(rows.length>50000)return err("Event log too large for one CSV export",413);
+        const header="timestamp_utc,operator,event_kind,action,value,status,summary,error_code";
+        const lines=rows.reverse().map(raw=>{
+          const row=presentEvent(raw,language);
+          return [new Date(Number(row.created_at)*1000).toISOString(),row.operator,
+            row.kind,row.action,row.value,row.status,row.summary,row.error_code].map(csvCell).join(",");
+        });
+        return new Response("\uFEFF"+[header,...lines].join("\r\n")+"\r\n",{
+          status:200,headers:{"content-type":"text/csv; charset=utf-8",
+            "content-disposition":'attachment; filename="smartstir-'+deviceId+'-events.csv"',
+            "cache-control":"private, no-store","x-content-type-options":"nosniff"}});
+      }
+
       const devicePath=path.match(/^\/api\/v1\/devices\/([a-z0-9-]+)(?:\/(events|commands)(?:\/([0-9a-f-]{36}))?)?$/i);
       if(devicePath){
         const deviceId=devicePath[1],kind=devicePath[2],commandId=devicePath[3];
         if(!await belongs(user.id,deviceId))return err("Device not found",404);
         if(!kind&&method==="GET")return json(currentState(deviceId));
-        if(kind==="events"&&method==="GET")
-          return json(await q("SELECT e.kind,e.data_json,e.created_at,c.command,c.value,c.status,u.username AS operator FROM device_events e LEFT JOIN commands c ON c.device_id=e.device_id AND c.command_id::text=(e.data_json::jsonb->>'command_id') LEFT JOIN users u ON u.id=c.user_id WHERE e.device_id=$1 ORDER BY e.created_at DESC,e.id DESC LIMIT 300",[deviceId]));
+        if(kind==="events"&&method==="GET"){
+          const language=["zh","en","ja"].includes(url.searchParams.get("lang"))?url.searchParams.get("lang"):"zh";
+          const rows=await q(eventSelect+" LIMIT 300",[deviceId]);
+          return json(rows.map(row=>presentEvent(row,language)));
+        }
         if(kind==="commands"&&commandId&&method==="GET"){
           const rows=await q("SELECT command_id,command,value,status,ack_json,created_at FROM commands WHERE device_id=$1 AND command_id=$2",[deviceId,commandId]);
           if(!rows.length)return err("Command not found",404);
