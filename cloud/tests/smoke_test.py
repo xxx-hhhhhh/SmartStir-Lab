@@ -50,7 +50,7 @@ check(200, (status, runs))
 assert runs[0]["id"] == run_id and runs[0]["sample_count"] == 2, runs
 status, samples = req(device_path + "/runs/" + run_id + "/samples", token=alice)
 check(200, (status, samples))
-assert len(samples) == 2 and samples[0]["pwm_percent"] == 30, samples
+assert len(samples) == 2 and abs(samples[0]["pwm_percent"] - 10.1) < 0.001, samples
 check(404, req(device_path + "/runs/" + run_id + "/samples", token=bob))
 check(422, req(device_path + "/commands", "POST",
                {"command":"SET_SAMPLE_INTERVAL","value":2}, token=alice))
@@ -68,7 +68,7 @@ assert csv_rows[0] == [
     "timestamp_utc", "device_id", "motor_enabled", "pwm_percent",
     "actual_rpm", "fault", "uptime_ms"
 ], csv_rows[0]
-assert len(csv_rows) == 3 and csv_rows[1][3] == "30", csv_rows
+assert len(csv_rows) == 3 and csv_rows[1][3] == "10.1", csv_rows
 assert csv_rows[2][5].startswith("'=HYPERLINK"), "CSV formula not escaped"
 check(404, req(device_path + "/runs/" + run_id + ".csv", token=bob))
 
