@@ -1,0 +1,125 @@
+name: SmartStir V1.3.4 validation
+on:
+  push:
+    branches: [feature/v134-pwm-i18n-record-events]
+  pull_request:
+    branches: [feature/labs-users-i18n-v1.3]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  gateway:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: smartstir
+          POSTGRES_PASSWORD: test_password_only
+          POSTGRES_DB: smartstir_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U smartstir -d smartstir_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.4'
+      - name: Check TS syntax and bundling
+        run: bun build cloud/gateway-v1.3.ts --target bun --external mqtt --external postgres --outfile /tmp/gateway-check.js
+      - name: Install gateway dependencies
+        working-directory: cloud
+        run: bun install
+      - name: Boot isolated integration gateway
+        env:
+          DATABASE_URL: postgres://smartstir:test_password_only@127.0.0.1:5432/smartstir_test
+        run: |
+          bun cloud/gateway-v1.3.ts > /tmp/gateway.log 2>&1 &
+          for i in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3000/health >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/gateway.log
+          exit 1
+      - name: Integration smoke tests
+        env:
+          DATABASE_URL: postgres://smartstir:test_password_only@127.0.0.1:5432/smartstir_test
+        run: python3 cloud/tests/smoke_test.py
+      - name: Gateway diagnostics if failed
+        if: failure()
+        run: cat /tmp/gateway.log || true
+
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.9'
+          channel: stable
+          cache: true
+      - name: Generate Android project
+        working-directory: mobile
+        run: flutter create --org com.smartstir --project-name smartstir_lab --platforms=android .
+      - name: Prepare isolated preview application ID and Internet permission
+        working-directory: mobile
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          manifest=Path('android/app/src/main/AndroidManifest.xml')
+          s=manifest.read_text()
+          if 'android.permission.INTERNET' not in s:
+              s=s.replace('<application','<uses-permission android:name="android.permission.INTERNET" />\n    <application',1)
+              manifest.write_text(s)
+          gradle=Path('android/app/build.gradle.kts')
+          s=gradle.read_text()
+          orig='applicationId = "com.smartstir.smartstir_lab"'
+          assert orig in s, "Generated application ID changed; avoid overwriting stable app"
+          gradle.write_text(s.replace(orig,'applicationId = "com.smartstir.smartstir_lab.v134preview"',1))
+          PY
+      - name: Flutter dependencies
+        working-directory: mobile
+        run: flutter pub get
+      - name: Static analysis
+        working-directory: mobile
+        run: flutter analyze
+      - name: Flutter tests
+        working-directory: mobile
+        run: flutter test
+      - name: Build isolated Android debug APK
+        working-directory: mobile
+        run: flutter build apk --debug
+      - name: Package preview
+        run: |
+          mkdir -p dist
+          cp mobile/build/app/outputs/flutter-apk/app-debug.apk dist/SmartStir-Lab-v1.3.4-preview-debug.apk
+          (cd dist && sha256sum SmartStir-Lab-v1.3.4-preview-debug.apk > SHA256SUMS.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SmartStir-Lab-v1.3.4-preview-apk
+          path: dist/
+
+  firmware:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arduino/setup-arduino-cli@v2
+      - name: Install ESP32 core and required libraries
+        run: |
+          arduino-cli core update-index --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core install esp32:esp32 --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli lib install "PubSubClient" "ArduinoJson"
+      - name: Compile firmware using non-secret placeholder configuration
+        run: |
+          cp firmware/SmartStir/secrets.h.example firmware/SmartStir/secrets.h
+          arduino-cli compile --fqbn esp32:esp32:esp32 firmware/SmartStir
