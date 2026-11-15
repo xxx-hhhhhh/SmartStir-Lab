@@ -279,6 +279,15 @@ class _WorkspacePageState extends State<WorkspacePage> {
             )),
         ]))),
       const SizedBox(height:14),
+      if(!_followLatestRun&&_runs.isNotEmpty)Align(
+        alignment:Alignment.centerRight,
+        child:TextButton.icon(onPressed:_followLatest,
+          icon:const Icon(Icons.fiber_manual_record),
+          label:Text(L.t('follow_latest')))),
+      if(_device?['online']==true&&_device?['motor_enabled']==true&&
+         !_runs.any((run)=>run['ended_at']==null))
+        Card(child:Padding(padding:const EdgeInsets.all(12),
+          child:Text(L.t('record_waiting_telemetry')))),
       if(_loadingRuns)const LinearProgressIndicator(),
       if(_runs.isEmpty&&!_loadingRuns)Card(child:Padding(
         padding:const EdgeInsets.all(24),
