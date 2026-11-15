@@ -187,25 +187,27 @@ const eventLabels={
     command_sent:"已点击按钮并下发",command_ack:"ESP32 执行反馈",command_rejected:"操作未发送",command_failed:"发送失败",
     device_event:"设备事件",APPLIED:"执行成功",REJECTED:"设备拒绝",FAILED:"失败",DUPLICATE:"重复指令",
     PENDING:"等待确认",TIMEOUT:"确认超时",DEVICE_OFFLINE:"设备离线",MQTT_OFFLINE:"云端 MQTT 离线",
-    MQTT_PUBLISH_FAILED:"MQTT 发送失败",UNKNOWN:"未知事件"},
+    MQTT_PUBLISH_FAILED:"MQTT 发送失败",PWM_ZERO_OR_NOT_CONNECTED:"PWM 为零或设备断网",INVALID_OR_EXPIRED_TIME:"指令时间无效或已过期",INVALID_VALUE:"指令数值无效",INVALID_PRECISION:"PWM 小数精度不支持",OUT_OF_RANGE:"数值超出范围",ALREADY_HANDLED:"指令已经处理过",INVALID_INTERVAL:"采样间隔不合法",UNKNOWN_COMMAND:"不支持的指令",UNKNOWN:"未知事件"},
   en:{START:"Start motor",STOP:"Stop motor",SET_PWM:"Set PWM",SET_SAMPLE_INTERVAL:"Set sample interval",
     command_sent:"Button pressed / command sent",command_ack:"ESP32 acknowledgement",command_rejected:"Not sent",
     command_failed:"Publish failed",device_event:"Device event",APPLIED:"Applied",REJECTED:"Rejected",FAILED:"Failed",
     DUPLICATE:"Duplicate",PENDING:"Awaiting acknowledgement",TIMEOUT:"Timed out",DEVICE_OFFLINE:"Device offline",
-    MQTT_OFFLINE:"Cloud MQTT offline",MQTT_PUBLISH_FAILED:"MQTT publish failed",UNKNOWN:"Unknown event"},
+    MQTT_OFFLINE:"Cloud MQTT offline",MQTT_PUBLISH_FAILED:"MQTT publish failed",PWM_ZERO_OR_NOT_CONNECTED:"PWM is zero or device is disconnected",INVALID_OR_EXPIRED_TIME:"Expired command",INVALID_VALUE:"Invalid value",INVALID_PRECISION:"Unsupported PWM precision",OUT_OF_RANGE:"Out of range",ALREADY_HANDLED:"Already handled",INVALID_INTERVAL:"Invalid sample interval",UNKNOWN_COMMAND:"Unknown command",UNKNOWN:"Unknown event"},
   ja:{START:"モーター起動",STOP:"モーター停止",SET_PWM:"PWM設定",SET_SAMPLE_INTERVAL:"サンプル間隔設定",
     command_sent:"ボタン操作・送信",command_ack:"ESP32応答",command_rejected:"送信されませんでした",
     command_failed:"送信失敗",device_event:"デバイスイベント",APPLIED:"適用済み",REJECTED:"拒否",FAILED:"失敗",
     DUPLICATE:"重複",PENDING:"確認待ち",TIMEOUT:"タイムアウト",DEVICE_OFFLINE:"オフライン",
-    MQTT_OFFLINE:"MQTTオフライン",MQTT_PUBLISH_FAILED:"MQTT送信失敗",UNKNOWN:"不明なイベント"},
+    MQTT_OFFLINE:"MQTTオフライン",MQTT_PUBLISH_FAILED:"MQTT送信失敗",PWM_ZERO_OR_NOT_CONNECTED:"PWMゼロまたは切断中",INVALID_OR_EXPIRED_TIME:"期限切れコマンド",INVALID_VALUE:"無効な値",INVALID_PRECISION:"未対応のPWM精度",OUT_OF_RANGE:"範囲外",ALREADY_HANDLED:"処理済み",INVALID_INTERVAL:"無効な間隔",UNKNOWN_COMMAND:"未対応コマンド",UNKNOWN:"不明なイベント"},
 };
-const eventSelect="SELECT e.kind,e.data_json,e.created_at,c.command,c.value,c.status,u.username AS operator FROM device_events e LEFT JOIN commands c ON c.device_id=e.device_id AND c.command_id::text=(e.data_json::jsonb->>'command_id') LEFT JOIN users u ON u.id=c.user_id WHERE e.device_id=$1 ORDER BY e.created_at DESC,e.id DESC";
+const eventSelect="SELECT e.kind,e.data_json,e.created_at,c.command,c.value,c.status,c.ack_json,u.username AS operator FROM device_events e LEFT JOIN commands c ON c.device_id=e.device_id AND c.command_id::text=(e.data_json::jsonb->>'command_id') LEFT JOIN users u ON u.id=c.user_id WHERE e.device_id=$1 ORDER BY e.created_at DESC,e.id DESC";
 function presentEvent(row,language){
   const words=eventLabels[language]||eventLabels.zh;
   let data={};try{data=JSON.parse(row.data_json||"{}");}catch{}
   const command=row.command||data.command||null;
   const value=row.value??data.value??null;
   const operator=row.operator||data.user||null;
+  let storedAck={};try{if(row.ack_json)storedAck=JSON.parse(row.ack_json);}catch{}
+  const reason=data.error_code||data.reason||storedAck.error_code||null;
   const rawStatus=(row.kind==="command_ack"?data.status:row.status)||data.reason||null;
   const status=rawStatus==="PENDING" && now()-Number(row.created_at)>12?"TIMEOUT":rawStatus;
   const action=command?(words[command]||command)+
@@ -213,8 +215,9 @@ function presentEvent(row,language){
       command==="SET_SAMPLE_INTERVAL"?" "+value+"s":""):(words[row.kind]||words.UNKNOWN);
   return {...row,operator,command,value,status,
     action,summary:(words[row.kind]||words.UNKNOWN)+(command?" · "+action:"")+
-      (status?" · "+(words[status]||status):""),
-    error_code:data.error_code||data.reason||null};
+      (status?" · "+(words[status]||status):"")+
+      (reason?" · "+(words[reason]||(language==="zh"?"请检查设备状态":reason)):""),
+    error_code:reason};
 }
 
 const client = env.MQTT_HOST && env.MQTT_USER && env.MQTT_PASSWORD
