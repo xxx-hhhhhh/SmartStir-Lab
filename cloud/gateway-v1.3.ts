@@ -454,7 +454,7 @@ Bun.serve({
         if(!await belongs(user.id,deviceId))return err("Device not found",404);
         const selected=await q("SELECT id FROM experiment_runs WHERE device_id=$1 AND id=$2",[deviceId,runId]);
         if(!selected.length)return err("Experiment not found",404);
-        const rows=await q("SELECT sampled_at,motor_enabled,pwm_percent,actual_rpm,fault,uptime_ms FROM (SELECT id,sampled_at,motor_enabled,pwm_percent,actual_rpm,fault,uptime_ms FROM experiment_samples WHERE run_id=$1 ORDER BY id DESC LIMIT 240) recent ORDER BY id ASC",[runId]);
+        const rows=await q("SELECT sampled_at,motor_enabled,pwm_percent::double precision AS pwm_percent,actual_rpm,fault,uptime_ms FROM (SELECT id,sampled_at,motor_enabled,pwm_percent,actual_rpm,fault,uptime_ms FROM experiment_samples WHERE run_id=$1 ORDER BY id DESC LIMIT 240) recent ORDER BY id ASC",[runId]);
         return json(rows);
       }
       // A laboratory member can list and export ONLY their lab's device runs.
