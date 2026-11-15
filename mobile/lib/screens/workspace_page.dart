@@ -60,7 +60,6 @@ class _WorkspacePageState extends State<WorkspacePage> {
       if(_tab==2&&tick%3==0)_refreshEvents();
     });
   }
-  @override
   void _languageChanged(){
     if(!mounted)return;
     setState((){});
@@ -383,7 +382,7 @@ class _WorkspacePageState extends State<WorkspacePage> {
       if(mounted&&generation==_generation){
         final verb=command=='SET_PWM'?L.t('set_pwm'):command=='SET_SAMPLE_INTERVAL'
             ?L.t('sample_interval'):command=='START'?L.t('start'):L.t('stop');
-        setState(()=>_action='$verb: ${L.t('ack_'+status.toLowerCase())}${detail.isEmpty?'':' ($detail)'}');
+        setState(()=>_action='$verb: ${L.t('ack_${status.toLowerCase()}')}${detail.isEmpty?'':' ($detail)'}');
       }
       await _refresh();
     }catch(e){
@@ -589,8 +588,10 @@ class _WorkspacePageState extends State<WorkspacePage> {
         fileNameOverrides:[fileName],title:L.t('export_events'),
       ));
     } catch(e) {
-      if(mounted)ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content:Text('${L.t('export_failed')}: $e')));
+      if(mounted){
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content:Text('${L.t('export_failed')}: $e')));
+      }
     } finally {
       if(mounted)setState(()=>_exportingEvents=false);
     }
