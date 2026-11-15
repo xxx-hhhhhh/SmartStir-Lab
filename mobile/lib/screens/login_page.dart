@@ -40,8 +40,15 @@ class _LoginPageState extends State<LoginPage> {
     }
   }
 
+  void _languageChanged(){if(mounted)setState((){});}
+  @override
+  void initState(){
+    super.initState();
+    AppPrefs.language.addListener(_languageChanged);
+  }
   @override
   void dispose() {
+    AppPrefs.language.removeListener(_languageChanged);
     _server.dispose(); _username.dispose(); _password.dispose(); _confirmation.dispose();
     super.dispose();
   }
