@@ -36,6 +36,7 @@ class _WorkspacePageState extends State<WorkspacePage> {
   bool _loadingRuns=false;
   String? _exportingRunId;
   double _pwm=30.0;
+  bool _pwmEdited=false;
   final TextEditingController _pwmInput=TextEditingController(text:'30.0');
   bool _followLatestRun=true;
   bool _exportingEvents=false;
@@ -80,7 +81,14 @@ class _WorkspacePageState extends State<WorkspacePage> {
     try{
       final result=await widget.api.device();
       if(!mounted)return;
-      setState(()=>_device=result);
+      setState((){
+        _device=result;
+        if(!_pwmEdited && result['pwm_percent'] is num) {
+          _pwm=((result['pwm_percent'] as num).toDouble()*10).round()/10.0;
+          _pwm=_pwm.clamp(0.0,100.0);
+          _pwmInput.text=_pwm.toStringAsFixed(1);
+        }
+      });
       _lastSeen=DateTime.now();
       _error=null;
     }catch(e){if(mounted)setState(()=>_error=e.toString());}
@@ -164,7 +172,7 @@ class _WorkspacePageState extends State<WorkspacePage> {
 
   void _changePwm(double value) {
     final rounded=(value.clamp(0.0,100.0)*10).round()/10.0;
-    setState(()=>_pwm=rounded);
+    setState((){_pwm=rounded;_pwmEdited=true;});
     final label=rounded.toStringAsFixed(1);
     _pwmInput.value=TextEditingValue(text:label,
       selection:TextSelection.collapsed(offset:label.length));
@@ -269,8 +277,8 @@ class _WorkspacePageState extends State<WorkspacePage> {
                    '${dt.hour.toString().padLeft(2,'0')}:${dt.minute.toString().padLeft(2,'0')}:${dt.second.toString().padLeft(2,'0')}';
                 return DataRow(cells:[
                   DataCell(Text(stamp)),
-                  DataCell(Text(sample['pwm_percent']==null?'—':
-                    '${sample['pwm_percent']}%')),
+                  DataCell(Text(sample['pwm_percent'] is num
+                    ?'${(sample['pwm_percent'] as num).toStringAsFixed(1)}%':'—')),
                   DataCell(Text(sample['actual_rpm']==null?'—':
                     sample['actual_rpm'].toString())),
                   DataCell(Text(L.t(sample['motor_enabled']==true?'running':'stopped'))),
@@ -516,10 +524,13 @@ class _WorkspacePageState extends State<WorkspacePage> {
                   suffixText:'%',isDense:true),
                 onChanged:(raw){
                   final v=double.tryParse(raw.trim().replaceAll(',','.'));
-                  if(v!=null&&v>=0&&v<=100&&
-                     ((v*10)-(v*10).round()).abs()<0.000001) {
-                    setState(()=>_pwm=(v*10).round()/10.0);
-                  }
+                  setState((){
+                    _pwmEdited=true;
+                    if(v!=null&&v>=0&&v<=100&&
+                       ((v*10)-(v*10).round()).abs()<0.000001) {
+                      _pwm=(v*10).round()/10.0;
+                    }
+                  });
                 },
                 onSubmitted:(_){if(canOperate)_applyPwm();},
               )),
