@@ -6,7 +6,9 @@ class AppSettingsPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return ValueListenableBuilder<String>(
+      valueListenable:AppPrefs.language,
+      builder:(context,language,_)=>Scaffold(
       appBar: AppBar(title:Text(L.t('settings'))),
       body: ListView(padding:const EdgeInsets.all(16),children:[
         Card(child:Padding(padding:const EdgeInsets.all(12),child:Column(
@@ -33,6 +35,6 @@ class AppSettingsPage extends StatelessWidget {
           child:Text(L.t('safety_note'),
             style:const TextStyle(fontSize:12,color:Color(0xFF64748B)))),
       ]),
-    );
+    ));
   }
 }
