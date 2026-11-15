@@ -1,5 +1,5 @@
 /*
- * SmartStir Lab ESP32 firmware v1.3.0
+ * SmartStir Lab ESP32 firmware v1.3.4
  * Adapted from the user's legacy TB6612 + Blinker + Hall + OLED sketch.
  *
  * Preserved: STBY=4, AIN1=5, AIN2=18, PWMA=19, 20kHz/10-bit PWM;
