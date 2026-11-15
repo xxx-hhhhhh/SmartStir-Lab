@@ -167,7 +167,7 @@ class SmartStirApi {
   Future<Map<String, dynamic>> device() =>
       _request('GET', '/api/v1/devices/${Uri.encodeComponent(deviceId)}');
 
-  Future<Map<String, dynamic>> sendCommand(String command, {int? value}) =>
+  Future<Map<String, dynamic>> sendCommand(String command, {num? value}) =>
       _request('POST', '/api/v1/devices/${Uri.encodeComponent(deviceId)}/commands', {
         'command': command,
         if (value != null) 'value': value,
@@ -203,9 +203,26 @@ class SmartStirApi {
     }
   }
 
+  Future<List<int>> eventsCsv() async {
+    try {
+      final uri=Uri.parse('$baseUrl/api/v1/devices/${Uri.encodeComponent(deviceId)}/events.csv?lang=${AppPrefs.language.value}');
+      final r=await _client.get(uri,headers:{'Authorization':'Bearer $token'})
+          .timeout(const Duration(seconds:25));
+      if(r.statusCode!=200) {
+        throw ApiError(_extractError(_decodeMap(r),r.statusCode),r.statusCode);
+      }
+      if(!(r.headers['content-type']??'').contains('text/csv')) {
+        throw ApiError('Invalid CSV content type');
+      }
+      return r.bodyBytes;
+    } on TimeoutException {
+      throw ApiError('CSV download timed out');
+    }
+  }
+
   Future<List<Map<String, dynamic>>> events() async {
     try {
-      final r = await _client.get(Uri.parse('$baseUrl/api/v1/devices/${Uri.encodeComponent(deviceId)}/events'),
+      final r = await _client.get(Uri.parse('$baseUrl/api/v1/devices/${Uri.encodeComponent(deviceId)}/events?lang=${AppPrefs.language.value}'),
         headers: {'Authorization': 'Bearer $token'}).timeout(const Duration(seconds: 10));
       if (r.statusCode != 200) {
         throw ApiError(_extractError(_decodeMap(r), r.statusCode), r.statusCode);
