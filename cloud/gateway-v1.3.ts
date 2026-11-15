@@ -29,6 +29,7 @@ const allowedSampleMs = new Set([1000,3000,5000,10000]);
 const sampleInterval = raw => allowedSampleMs.has(raw)?raw:3000;
 const failures = new Map();
 const states = new Map();
+const stateWriteQueues = new Map(); // Serialize actual telemetry recording for each device.
 const MQTT_PREFIX = "smartstir/v1/devices/";
 
 async function initDb() {
@@ -39,13 +40,15 @@ async function initDb() {
   await q("CREATE TABLE IF NOT EXISTS lab_invitations (id UUID PRIMARY KEY, lab_id UUID NOT NULL REFERENCES labs(id) ON DELETE CASCADE, user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE, invited_by UUID NOT NULL REFERENCES users(id), status TEXT NOT NULL CHECK(status IN ('pending','accepted','declined')), created_at BIGINT NOT NULL, UNIQUE(lab_id,user_id))");
   await q("CREATE TABLE IF NOT EXISTS device_claims (device_id TEXT PRIMARY KEY, code_hash TEXT NOT NULL, last_seen BIGINT NOT NULL)");
   await q("CREATE TABLE IF NOT EXISTS devices (device_id TEXT PRIMARY KEY, lab_id UUID NOT NULL REFERENCES labs(id) ON DELETE CASCADE, label TEXT NOT NULL, claimed_by UUID NOT NULL REFERENCES users(id), created_at BIGINT NOT NULL)");
-  await q("CREATE TABLE IF NOT EXISTS commands (command_id UUID PRIMARY KEY, device_id TEXT NOT NULL REFERENCES devices(device_id), user_id UUID NOT NULL REFERENCES users(id), command TEXT NOT NULL, value INTEGER, status TEXT NOT NULL, ack_json TEXT, created_at BIGINT NOT NULL)");
+  await q("CREATE TABLE IF NOT EXISTS commands (command_id UUID PRIMARY KEY, device_id TEXT NOT NULL REFERENCES devices(device_id), user_id UUID NOT NULL REFERENCES users(id), command TEXT NOT NULL, value NUMERIC(5,1), status TEXT NOT NULL, ack_json TEXT, created_at BIGINT NOT NULL)");
+  await q("ALTER TABLE commands ALTER COLUMN value TYPE NUMERIC(5,1) USING value::numeric");
   await q("CREATE TABLE IF NOT EXISTS device_events (id UUID PRIMARY KEY, device_id TEXT NOT NULL REFERENCES devices(device_id), kind TEXT NOT NULL, data_json TEXT NOT NULL, created_at BIGINT NOT NULL)");
   await q("CREATE TABLE IF NOT EXISTS experiment_runs (id UUID PRIMARY KEY, device_id TEXT NOT NULL REFERENCES devices(device_id), started_at TIMESTAMPTZ NOT NULL DEFAULT now(), ended_at TIMESTAMPTZ, end_reason TEXT, last_sample_at TIMESTAMPTZ NOT NULL DEFAULT now(), sample_count INTEGER NOT NULL DEFAULT 0)");
   await q("CREATE UNIQUE INDEX IF NOT EXISTS idx_experiment_one_active ON experiment_runs(device_id) WHERE ended_at IS NULL");
   await q("CREATE INDEX IF NOT EXISTS idx_experiment_device_recent ON experiment_runs(device_id, started_at DESC)");
   await q("ALTER TABLE experiment_runs ADD COLUMN IF NOT EXISTS sample_interval_ms INTEGER NOT NULL DEFAULT 3000");
-  await q("CREATE TABLE IF NOT EXISTS experiment_samples (id BIGSERIAL PRIMARY KEY, run_id UUID NOT NULL REFERENCES experiment_runs(id) ON DELETE CASCADE, sampled_at TIMESTAMPTZ NOT NULL DEFAULT now(), motor_enabled BOOLEAN NOT NULL, pwm_percent INTEGER, actual_rpm DOUBLE PRECISION, fault TEXT, uptime_ms BIGINT)");
+  await q("CREATE TABLE IF NOT EXISTS experiment_samples (id BIGSERIAL PRIMARY KEY, run_id UUID NOT NULL REFERENCES experiment_runs(id) ON DELETE CASCADE, sampled_at TIMESTAMPTZ NOT NULL DEFAULT now(), motor_enabled BOOLEAN NOT NULL, pwm_percent NUMERIC(5,1), actual_rpm DOUBLE PRECISION, fault TEXT, uptime_ms BIGINT)");
+  await q("ALTER TABLE experiment_samples ALTER COLUMN pwm_percent TYPE NUMERIC(5,1) USING pwm_percent::numeric");
   await q("CREATE INDEX IF NOT EXISTS idx_experiment_samples_run ON experiment_samples(run_id, id)");
 
   await q("CREATE INDEX IF NOT EXISTS idx_commands_device_time ON commands(device_id,created_at DESC)");
@@ -158,7 +161,7 @@ async function recordExperimentState(deviceId, state) {
     active=(await q("SELECT id FROM experiment_runs WHERE device_id=$1 AND ended_at IS NULL LIMIT 1",[deviceId]))[0];
     if(!active)return;
   }
-  const pwm=Number.isInteger(state.pwm_percent)&&state.pwm_percent>=0&&state.pwm_percent<=100?state.pwm_percent:null;
+  const pwm=typeof state.pwm_percent==="number"&&Number.isFinite(state.pwm_percent)&&state.pwm_percent>=0&&state.pwm_percent<=100?Math.round(state.pwm_percent*10)/10:null;
   const rpm=typeof state.actual_rpm==="number"&&Number.isFinite(state.actual_rpm)&&state.actual_rpm>=0?state.actual_rpm:null;
   const uptime=Number.isSafeInteger(state.uptime_ms)&&state.uptime_ms>=0?state.uptime_ms:null;
   const fault=typeof state.fault==="string"?state.fault.slice(0,120):null;
@@ -253,7 +256,13 @@ async function handleMqtt(topic,payload,retained=false) {
       if(Object.prototype.hasOwnProperty.call(obj,key))s[key]=obj[key];
     s.lastSeen=now();s.lastStateAt=now();
     states.set(deviceId,s);
-    if(!retained)await recordExperimentState(deviceId,obj);
+    if(!retained){
+      const previous=stateWriteQueues.get(deviceId)||Promise.resolve();
+      const next=previous.catch(()=>{}).then(()=>recordExperimentState(deviceId,obj));
+      stateWriteQueues.set(deviceId,next);
+      try { await next; }
+      finally { if(stateWriteQueues.get(deviceId)===next)stateWriteQueues.delete(deviceId); }
+    }
     return;
   }
   if(kind==="ack"){
@@ -444,7 +453,7 @@ Bun.serve({
         if(!await belongs(user.id,deviceId))return err("Device not found",404);
         if(!kind&&method==="GET")return json(currentState(deviceId));
         if(kind==="events"&&method==="GET")
-          return json(await q("SELECT kind,data_json,created_at FROM device_events WHERE device_id=$1 ORDER BY created_at DESC LIMIT 100",[deviceId]));
+          return json(await q("SELECT e.kind,e.data_json,e.created_at,c.command,c.value,c.status,u.username AS operator FROM device_events e LEFT JOIN commands c ON c.device_id=e.device_id AND c.command_id::text=(e.data_json::jsonb->>'command_id') LEFT JOIN users u ON u.id=c.user_id WHERE e.device_id=$1 ORDER BY e.created_at DESC,e.id DESC LIMIT 300",[deviceId]));
         if(kind==="commands"&&commandId&&method==="GET"){
           const rows=await q("SELECT command_id,command,value,status,ack_json,created_at FROM commands WHERE device_id=$1 AND command_id=$2",[deviceId,commandId]);
           if(!rows.length)return err("Command not found",404);
@@ -455,13 +464,20 @@ Bun.serve({
         if(kind==="commands"&&!commandId&&method==="POST"){
           const d=await body(req),command=String(d.command||"");
           if(!["START","STOP","SET_PWM","SET_SAMPLE_INTERVAL"].includes(command))return err("Invalid command",422);
-          if(command==="SET_PWM" && (!Number.isInteger(d.value)||d.value<0||d.value>100))
-            return err("PWM must be an integer 0..100",422);
+          if(command==="SET_PWM" && (typeof d.value!=="number" || !Number.isFinite(d.value) ||
+            d.value<0 || d.value>100 || Math.abs(d.value*10-Math.round(d.value*10))>1e-7))
+            return err("PWM must be 0..100 with at most one decimal place",422);
           if(command==="SET_SAMPLE_INTERVAL" && (![1,3,5,10].includes(d.value) || !Number.isInteger(d.value)))
             return err("Sampling interval must be 1, 3, 5 or 10 seconds",422);
           if(!["SET_PWM","SET_SAMPLE_INTERVAL"].includes(command)&&d.value!=null)return err("Unexpected value",422);
-          if(!mqttOnline||!client)return err("MQTT service offline",503);
-          if(command!=="STOP"&&!currentState(deviceId).online)return err("Device offline",409);
+          if(!mqttOnline||!client){
+            await recordEvent(deviceId,"command_rejected",{command,user:user.username,value:d.value??null,reason:"MQTT_OFFLINE"});
+            return err("MQTT service offline",503);
+          }
+          if(command!=="STOP"&&!currentState(deviceId).online){
+            await recordEvent(deviceId,"command_rejected",{command,user:user.username,value:d.value??null,reason:"DEVICE_OFFLINE"});
+            return err("Device offline",409);
+          }
           const id=randomUUID(),time=now();
           await q("INSERT INTO commands(command_id,device_id,user_id,command,value,status,created_at) VALUES($1,$2,$3,$4,$5,'PENDING',$6)",
             [id,deviceId,user.id,command,["SET_PWM","SET_SAMPLE_INTERVAL"].includes(command)?d.value:null,time]);
@@ -473,9 +489,10 @@ Bun.serve({
               {qos:1,retain:false},e=>e?reject(e):resolve()));
           }catch(e){
             await q("UPDATE commands SET status='FAILED' WHERE command_id=$1",[id]);
+            await recordEvent(deviceId,"command_failed",{command_id:id,command,user:user.username,value:d.value??null,reason:"MQTT_PUBLISH_FAILED"});
             return err("Unable to publish command",503);
           }
-          await recordEvent(deviceId,"command_sent",{command_id:id,command,user:user.username});
+          await recordEvent(deviceId,"command_sent",{command_id:id,command,value:d.value??null,user:user.username});
           return json({command_id:id,status:"PENDING"},202);
         }
       }
