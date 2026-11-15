@@ -12,6 +12,12 @@ const deviceId="stirrer-csvtest";
 await db.unsafe("INSERT INTO devices(device_id,lab_id,label,claimed_by,created_at) VALUES($1,$2,'CSV Test ESP32',$3,$4)",[deviceId,labId,owner.user_id,Math.floor(Date.now()/1000)]);
 const id=randomUUID();
 await db.unsafe("INSERT INTO experiment_runs(id,device_id,started_at,ended_at,end_reason,sample_count) VALUES($1,$2,now()-interval '6 seconds',now(),'stopped',2)",[id,deviceId]);
-await db.unsafe("INSERT INTO experiment_samples(run_id,motor_enabled,pwm_percent,actual_rpm,fault,uptime_ms) VALUES($1,true,30,NULL,NULL,3000),($1,false,0,NULL,$2,6000)",[id,'=HYPERLINK("https://example.com","x")']);
+await db.unsafe("INSERT INTO experiment_samples(run_id,motor_enabled,pwm_percent,actual_rpm,fault,uptime_ms) VALUES($1,true,10.1,NULL,NULL,3000),($1,false,0,NULL,$2,6000)",[id,'=HYPERLINK("https://example.com","x")']);
+const commandId=randomUUID();
+await db.unsafe("INSERT INTO commands(command_id,device_id,user_id,command,value,status,created_at) VALUES($1,$2,$3,'SET_PWM',10.1,'APPLIED',$4)",
+  [commandId,deviceId,owner.user_id,Math.floor(Date.now()/1000)]);
+await db.unsafe("INSERT INTO device_events(id,device_id,kind,data_json,created_at) VALUES($1,$2,'command_sent',$3,$4),($5,$2,'command_ack',$6,$4)",
+  [randomUUID(),deviceId,JSON.stringify({command_id:commandId,command:"SET_PWM",value:10.1,user:"alice_test"}),
+   Math.floor(Date.now()/1000),randomUUID(),JSON.stringify({command_id:commandId,status:"APPLIED",applied_pwm_percent:10.1})]);
 console.log(id);
 await db.end();
