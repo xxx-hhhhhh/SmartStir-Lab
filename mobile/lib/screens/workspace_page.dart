@@ -566,21 +566,55 @@ class _WorkspacePageState extends State<WorkspacePage> {
         color:Color(0xFF1B365D),fontWeight:FontWeight.w800,fontSize:19)),
     ]);
 
+  Future<void> _exportEvents() async {
+    if(_exportingEvents)return;
+    setState(()=>_exportingEvents=true);
+    try {
+      final bytes=await widget.api.eventsCsv();
+      if(!mounted)return;
+      final fileName='SmartStir-${widget.api.deviceId}-events.csv';
+      await SharePlus.instance.share(ShareParams(
+        files:[XFile.fromData(Uint8List.fromList(bytes),mimeType:'text/csv')],
+        fileNameOverrides:[fileName],title:L.t('export_events'),
+      ));
+    } catch(e) {
+      if(mounted)ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content:Text('${L.t('export_failed')}: $e')));
+    } finally {
+      if(mounted)setState(()=>_exportingEvents=false);
+    }
+  }
+
   Widget _eventsTab()=>RefreshIndicator(onRefresh:_refreshEvents,child:ListView(
     padding:const EdgeInsets.all(20),children:[
-      Text(L.t('events'),style:Theme.of(context).textTheme.headlineSmall),
+      Row(children:[
+        Expanded(child:Text(L.t('events'),
+          style:Theme.of(context).textTheme.headlineSmall)),
+        OutlinedButton.icon(
+          onPressed:_exportingEvents?null:_exportEvents,
+          icon:_exportingEvents?const SizedBox(width:16,height:16,
+            child:CircularProgressIndicator(strokeWidth:2))
+            :const Icon(Icons.file_download_outlined),
+          label:Text(L.t('export_events')),
+        ),
+      ]),
+      const SizedBox(height:8),
+      Text(L.t('event_log_hint'),style:const TextStyle(
+        color:Color(0xFF64748B),fontSize:12)),
       const SizedBox(height:12),
       if(_events.isEmpty)Card(child:Padding(padding:const EdgeInsets.all(24),
         child:Text(L.t('no_events')))),
       ..._events.map((e){
         final unix=e['created_at'];
         final date=unix is int?DateTime.fromMillisecondsSinceEpoch(unix*1000).toLocal():null;
-        final detail=e['data_json']?.toString()??'';
+        final summary=(e['summary']??L.t('event_unknown')).toString();
+        final operator=e['operator']?.toString()??L.t('device_actor');
+        final timestamp=date?.toString().split('.').first??'—';
         return Card(child:ListTile(
           leading:const Icon(Icons.event_note_outlined),
-          title:Text((e['kind']??'').toString()),
-          subtitle:Text('${date?.toString().split('.').first??'—'}\n$detail',
-            maxLines:4,overflow:TextOverflow.ellipsis),
+          title:Text(summary),
+          subtitle:Text('${L.t('event_operator')}: $operator\n${L.t('event_time')}: $timestamp'),
+          isThreeLine:true,
         ));
       }),
     ],
