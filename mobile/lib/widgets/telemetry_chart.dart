@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import '../core/app_preferences.dart';
 
 /// Plots only measured MQTT state samples. Missing seconds are NEVER synthesized.
 class TelemetryChart extends StatelessWidget {
@@ -26,7 +27,7 @@ class TelemetryChart extends StatelessWidget {
         const SizedBox(width:6),
         const Text('PWM (%)',style:TextStyle(fontSize:11)),
         const Spacer(),
-        Text('${valid.length} samples',style:const TextStyle(
+        Text('${valid.length} ${L.t('sample_count')}',style:const TextStyle(
           fontSize:11,color:Color(0xFF64748B))),
       ]),
     ]);

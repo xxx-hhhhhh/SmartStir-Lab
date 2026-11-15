@@ -29,6 +29,7 @@ const allowedSampleMs = new Set([1000,3000,5000,10000]);
 const sampleInterval = raw => allowedSampleMs.has(raw)?raw:3000;
 const failures = new Map();
 const states = new Map();
+const stateWriteQueues = new Map(); // Serialize actual telemetry recording for each device.
 const MQTT_PREFIX = "smartstir/v1/devices/";
 
 async function initDb() {
@@ -39,13 +40,15 @@ async function initDb() {
   await q("CREATE TABLE IF NOT EXISTS lab_invitations (id UUID PRIMARY KEY, lab_id UUID NOT NULL REFERENCES labs(id) ON DELETE CASCADE, user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE, invited_by UUID NOT NULL REFERENCES users(id), status TEXT NOT NULL CHECK(status IN ('pending','accepted','declined')), created_at BIGINT NOT NULL, UNIQUE(lab_id,user_id))");
   await q("CREATE TABLE IF NOT EXISTS device_claims (device_id TEXT PRIMARY KEY, code_hash TEXT NOT NULL, last_seen BIGINT NOT NULL)");
   await q("CREATE TABLE IF NOT EXISTS devices (device_id TEXT PRIMARY KEY, lab_id UUID NOT NULL REFERENCES labs(id) ON DELETE CASCADE, label TEXT NOT NULL, claimed_by UUID NOT NULL REFERENCES users(id), created_at BIGINT NOT NULL)");
-  await q("CREATE TABLE IF NOT EXISTS commands (command_id UUID PRIMARY KEY, device_id TEXT NOT NULL REFERENCES devices(device_id), user_id UUID NOT NULL REFERENCES users(id), command TEXT NOT NULL, value INTEGER, status TEXT NOT NULL, ack_json TEXT, created_at BIGINT NOT NULL)");
+  await q("CREATE TABLE IF NOT EXISTS commands (command_id UUID PRIMARY KEY, device_id TEXT NOT NULL REFERENCES devices(device_id), user_id UUID NOT NULL REFERENCES users(id), command TEXT NOT NULL, value NUMERIC(5,1), status TEXT NOT NULL, ack_json TEXT, created_at BIGINT NOT NULL)");
+  await q("ALTER TABLE commands ALTER COLUMN value TYPE NUMERIC(5,1) USING value::numeric");
   await q("CREATE TABLE IF NOT EXISTS device_events (id UUID PRIMARY KEY, device_id TEXT NOT NULL REFERENCES devices(device_id), kind TEXT NOT NULL, data_json TEXT NOT NULL, created_at BIGINT NOT NULL)");
   await q("CREATE TABLE IF NOT EXISTS experiment_runs (id UUID PRIMARY KEY, device_id TEXT NOT NULL REFERENCES devices(device_id), started_at TIMESTAMPTZ NOT NULL DEFAULT now(), ended_at TIMESTAMPTZ, end_reason TEXT, last_sample_at TIMESTAMPTZ NOT NULL DEFAULT now(), sample_count INTEGER NOT NULL DEFAULT 0)");
   await q("CREATE UNIQUE INDEX IF NOT EXISTS idx_experiment_one_active ON experiment_runs(device_id) WHERE ended_at IS NULL");
   await q("CREATE INDEX IF NOT EXISTS idx_experiment_device_recent ON experiment_runs(device_id, started_at DESC)");
   await q("ALTER TABLE experiment_runs ADD COLUMN IF NOT EXISTS sample_interval_ms INTEGER NOT NULL DEFAULT 3000");
-  await q("CREATE TABLE IF NOT EXISTS experiment_samples (id BIGSERIAL PRIMARY KEY, run_id UUID NOT NULL REFERENCES experiment_runs(id) ON DELETE CASCADE, sampled_at TIMESTAMPTZ NOT NULL DEFAULT now(), motor_enabled BOOLEAN NOT NULL, pwm_percent INTEGER, actual_rpm DOUBLE PRECISION, fault TEXT, uptime_ms BIGINT)");
+  await q("CREATE TABLE IF NOT EXISTS experiment_samples (id BIGSERIAL PRIMARY KEY, run_id UUID NOT NULL REFERENCES experiment_runs(id) ON DELETE CASCADE, sampled_at TIMESTAMPTZ NOT NULL DEFAULT now(), motor_enabled BOOLEAN NOT NULL, pwm_percent NUMERIC(5,1), actual_rpm DOUBLE PRECISION, fault TEXT, uptime_ms BIGINT)");
+  await q("ALTER TABLE experiment_samples ALTER COLUMN pwm_percent TYPE NUMERIC(5,1) USING pwm_percent::numeric");
   await q("CREATE INDEX IF NOT EXISTS idx_experiment_samples_run ON experiment_samples(run_id, id)");
 
   await q("CREATE INDEX IF NOT EXISTS idx_commands_device_time ON commands(device_id,created_at DESC)");
@@ -158,7 +161,7 @@ async function recordExperimentState(deviceId, state) {
     active=(await q("SELECT id FROM experiment_runs WHERE device_id=$1 AND ended_at IS NULL LIMIT 1",[deviceId]))[0];
     if(!active)return;
   }
-  const pwm=Number.isInteger(state.pwm_percent)&&state.pwm_percent>=0&&state.pwm_percent<=100?state.pwm_percent:null;
+  const pwm=typeof state.pwm_percent==="number"&&Number.isFinite(state.pwm_percent)&&state.pwm_percent>=0&&state.pwm_percent<=100?Math.round(state.pwm_percent*10)/10:null;
   const rpm=typeof state.actual_rpm==="number"&&Number.isFinite(state.actual_rpm)&&state.actual_rpm>=0?state.actual_rpm:null;
   const uptime=Number.isSafeInteger(state.uptime_ms)&&state.uptime_ms>=0?state.uptime_ms:null;
   const fault=typeof state.fault==="string"?state.fault.slice(0,120):null;
@@ -176,6 +179,45 @@ function csvCell(value) {
   let str=String(value);
   if(/^\s*[=+@-]/.test(str))str="'"+str;
   return '"'+str.replaceAll('"','""')+'"';
+}
+
+
+const eventLabels={
+  zh:{START:"启动电机",STOP:"停止电机",SET_PWM:"调整 PWM",SET_SAMPLE_INTERVAL:"设置采样间隔",
+    command_sent:"已点击按钮并下发",command_ack:"ESP32 执行反馈",command_rejected:"操作未发送",command_failed:"发送失败",
+    device_event:"设备事件",APPLIED:"执行成功",REJECTED:"设备拒绝",FAILED:"失败",DUPLICATE:"重复指令",
+    PENDING:"等待确认",TIMEOUT:"确认超时",DEVICE_OFFLINE:"设备离线",MQTT_OFFLINE:"云端 MQTT 离线",
+    MQTT_PUBLISH_FAILED:"MQTT 发送失败",PWM_ZERO_OR_NOT_CONNECTED:"PWM 为零或设备断网",INVALID_OR_EXPIRED_TIME:"指令时间无效或已过期",INVALID_VALUE:"指令数值无效",INVALID_PRECISION:"PWM 小数精度不支持",OUT_OF_RANGE:"数值超出范围",ALREADY_HANDLED:"指令已经处理过",INVALID_INTERVAL:"采样间隔不合法",UNKNOWN_COMMAND:"不支持的指令",UNKNOWN:"未知事件"},
+  en:{START:"Start motor",STOP:"Stop motor",SET_PWM:"Set PWM",SET_SAMPLE_INTERVAL:"Set sample interval",
+    command_sent:"Button pressed / command sent",command_ack:"ESP32 acknowledgement",command_rejected:"Not sent",
+    command_failed:"Publish failed",device_event:"Device event",APPLIED:"Applied",REJECTED:"Rejected",FAILED:"Failed",
+    DUPLICATE:"Duplicate",PENDING:"Awaiting acknowledgement",TIMEOUT:"Timed out",DEVICE_OFFLINE:"Device offline",
+    MQTT_OFFLINE:"Cloud MQTT offline",MQTT_PUBLISH_FAILED:"MQTT publish failed",PWM_ZERO_OR_NOT_CONNECTED:"PWM is zero or device is disconnected",INVALID_OR_EXPIRED_TIME:"Expired command",INVALID_VALUE:"Invalid value",INVALID_PRECISION:"Unsupported PWM precision",OUT_OF_RANGE:"Out of range",ALREADY_HANDLED:"Already handled",INVALID_INTERVAL:"Invalid sample interval",UNKNOWN_COMMAND:"Unknown command",UNKNOWN:"Unknown event"},
+  ja:{START:"モーター起動",STOP:"モーター停止",SET_PWM:"PWM設定",SET_SAMPLE_INTERVAL:"サンプル間隔設定",
+    command_sent:"ボタン操作・送信",command_ack:"ESP32応答",command_rejected:"送信されませんでした",
+    command_failed:"送信失敗",device_event:"デバイスイベント",APPLIED:"適用済み",REJECTED:"拒否",FAILED:"失敗",
+    DUPLICATE:"重複",PENDING:"確認待ち",TIMEOUT:"タイムアウト",DEVICE_OFFLINE:"オフライン",
+    MQTT_OFFLINE:"MQTTオフライン",MQTT_PUBLISH_FAILED:"MQTT送信失敗",PWM_ZERO_OR_NOT_CONNECTED:"PWMゼロまたは切断中",INVALID_OR_EXPIRED_TIME:"期限切れコマンド",INVALID_VALUE:"無効な値",INVALID_PRECISION:"未対応のPWM精度",OUT_OF_RANGE:"範囲外",ALREADY_HANDLED:"処理済み",INVALID_INTERVAL:"無効な間隔",UNKNOWN_COMMAND:"未対応コマンド",UNKNOWN:"不明なイベント"},
+};
+const eventSelect="SELECT e.kind,e.data_json,e.created_at,c.command,c.value,c.status,c.ack_json,u.username AS operator FROM device_events e LEFT JOIN commands c ON c.device_id=e.device_id AND c.command_id::text=(e.data_json::jsonb->>'command_id') LEFT JOIN users u ON u.id=c.user_id WHERE e.device_id=$1 ORDER BY e.created_at DESC,e.id DESC";
+function presentEvent(row,language){
+  const words=eventLabels[language]||eventLabels.zh;
+  let data={};try{data=JSON.parse(row.data_json||"{}");}catch{}
+  const command=row.command||data.command||null;
+  const value=row.value??data.value??null;
+  const operator=row.operator||data.user||null;
+  let storedAck={};try{if(row.ack_json)storedAck=JSON.parse(row.ack_json);}catch{}
+  const reason=data.error_code||data.reason||storedAck.error_code||null;
+  const rawStatus=(row.kind==="command_ack"?data.status:row.status)||data.reason||null;
+  const status=rawStatus==="PENDING" && now()-Number(row.created_at)>12?"TIMEOUT":rawStatus;
+  const action=command?(words[command]||command)+
+    (value==null?"":command==="SET_PWM"?" "+Number(value).toFixed(1)+"%":
+      command==="SET_SAMPLE_INTERVAL"?" "+value+"s":""):(words[row.kind]||words.UNKNOWN);
+  return {...row,operator,command,value,status,
+    action,summary:(words[row.kind]||words.UNKNOWN)+(command?" · "+action:"")+
+      (status?" · "+(words[status]||status):"")+
+      (reason?" · "+(words[reason]||(language==="zh"?"请检查设备状态":reason)):""),
+    error_code:reason};
 }
 
 const client = env.MQTT_HOST && env.MQTT_USER && env.MQTT_PASSWORD
@@ -248,12 +290,21 @@ async function handleMqtt(topic,payload,retained=false) {
     return;
   }
   if(kind==="state"){
+    // A retained MQTT snapshot is not proof of a currently running motor.
+    // Wait for a fresh live message before reporting online or opening a run.
+    if(retained)return;
     const s=states.get(deviceId)||{};
     for(const key of ["motor_enabled","pwm_percent","actual_rpm","armed","fault","sample_interval_ms"])
       if(Object.prototype.hasOwnProperty.call(obj,key))s[key]=obj[key];
     s.lastSeen=now();s.lastStateAt=now();
     states.set(deviceId,s);
-    if(!retained)await recordExperimentState(deviceId,obj);
+    {
+      const previous=stateWriteQueues.get(deviceId)||Promise.resolve();
+      const next=previous.catch(()=>{}).then(()=>recordExperimentState(deviceId,obj));
+      stateWriteQueues.set(deviceId,next);
+      try { await next; }
+      finally { if(stateWriteQueues.get(deviceId)===next)stateWriteQueues.delete(deviceId); }
+    }
     return;
   }
   if(kind==="ack"){
@@ -409,7 +460,7 @@ Bun.serve({
         if(!await belongs(user.id,deviceId))return err("Device not found",404);
         const selected=await q("SELECT id FROM experiment_runs WHERE device_id=$1 AND id=$2",[deviceId,runId]);
         if(!selected.length)return err("Experiment not found",404);
-        const rows=await q("SELECT sampled_at,motor_enabled,pwm_percent,actual_rpm,fault,uptime_ms FROM (SELECT id,sampled_at,motor_enabled,pwm_percent,actual_rpm,fault,uptime_ms FROM experiment_samples WHERE run_id=$1 ORDER BY id DESC LIMIT 240) recent ORDER BY id ASC",[runId]);
+        const rows=await q("SELECT sampled_at,motor_enabled,pwm_percent::double precision AS pwm_percent,actual_rpm,fault,uptime_ms FROM (SELECT id,sampled_at,motor_enabled,pwm_percent,actual_rpm,fault,uptime_ms FROM experiment_samples WHERE run_id=$1 ORDER BY id DESC LIMIT 240) recent ORDER BY id ASC",[runId]);
         return json(rows);
       }
       // A laboratory member can list and export ONLY their lab's device runs.
@@ -438,13 +489,37 @@ Bun.serve({
           "x-content-type-options":"nosniff"
         }});
       }
+
+      // Full audit export, scoped to the caller's laboratory membership.
+      const eventsCsvPath=path.match(/^\/api\/v1\/devices\/([a-z0-9-]+)\/events\.csv$/i);
+      if(eventsCsvPath&&method==="GET"){
+        const deviceId=eventsCsvPath[1];
+        if(!await belongs(user.id,deviceId))return err("Device not found",404);
+        const language=["zh","en","ja"].includes(url.searchParams.get("lang"))?url.searchParams.get("lang"):"zh";
+        const rows=await q(eventSelect+" LIMIT 50001",[deviceId]);
+        if(rows.length>50000)return err("Event log too large for one CSV export",413);
+        const header="timestamp_utc,operator,event_kind,action,value,status,summary,error_code";
+        const lines=rows.reverse().map(raw=>{
+          const row=presentEvent(raw,language);
+          return [new Date(Number(row.created_at)*1000).toISOString(),row.operator,
+            row.kind,row.action,row.value,row.status,row.summary,row.error_code].map(csvCell).join(",");
+        });
+        return new Response("\uFEFF"+[header,...lines].join("\r\n")+"\r\n",{
+          status:200,headers:{"content-type":"text/csv; charset=utf-8",
+            "content-disposition":'attachment; filename="smartstir-'+deviceId+'-events.csv"',
+            "cache-control":"private, no-store","x-content-type-options":"nosniff"}});
+      }
+
       const devicePath=path.match(/^\/api\/v1\/devices\/([a-z0-9-]+)(?:\/(events|commands)(?:\/([0-9a-f-]{36}))?)?$/i);
       if(devicePath){
         const deviceId=devicePath[1],kind=devicePath[2],commandId=devicePath[3];
         if(!await belongs(user.id,deviceId))return err("Device not found",404);
         if(!kind&&method==="GET")return json(currentState(deviceId));
-        if(kind==="events"&&method==="GET")
-          return json(await q("SELECT kind,data_json,created_at FROM device_events WHERE device_id=$1 ORDER BY created_at DESC LIMIT 100",[deviceId]));
+        if(kind==="events"&&method==="GET"){
+          const language=["zh","en","ja"].includes(url.searchParams.get("lang"))?url.searchParams.get("lang"):"zh";
+          const rows=await q(eventSelect+" LIMIT 300",[deviceId]);
+          return json(rows.map(row=>presentEvent(row,language)));
+        }
         if(kind==="commands"&&commandId&&method==="GET"){
           const rows=await q("SELECT command_id,command,value,status,ack_json,created_at FROM commands WHERE device_id=$1 AND command_id=$2",[deviceId,commandId]);
           if(!rows.length)return err("Command not found",404);
@@ -455,13 +530,20 @@ Bun.serve({
         if(kind==="commands"&&!commandId&&method==="POST"){
           const d=await body(req),command=String(d.command||"");
           if(!["START","STOP","SET_PWM","SET_SAMPLE_INTERVAL"].includes(command))return err("Invalid command",422);
-          if(command==="SET_PWM" && (!Number.isInteger(d.value)||d.value<0||d.value>100))
-            return err("PWM must be an integer 0..100",422);
+          if(command==="SET_PWM" && (typeof d.value!=="number" || !Number.isFinite(d.value) ||
+            d.value<0 || d.value>100 || Math.abs(d.value*10-Math.round(d.value*10))>1e-7))
+            return err("PWM must be 0..100 with at most one decimal place",422);
           if(command==="SET_SAMPLE_INTERVAL" && (![1,3,5,10].includes(d.value) || !Number.isInteger(d.value)))
             return err("Sampling interval must be 1, 3, 5 or 10 seconds",422);
           if(!["SET_PWM","SET_SAMPLE_INTERVAL"].includes(command)&&d.value!=null)return err("Unexpected value",422);
-          if(!mqttOnline||!client)return err("MQTT service offline",503);
-          if(command!=="STOP"&&!currentState(deviceId).online)return err("Device offline",409);
+          if(!mqttOnline||!client){
+            await recordEvent(deviceId,"command_rejected",{command,user:user.username,value:d.value??null,reason:"MQTT_OFFLINE"});
+            return err("MQTT service offline",503);
+          }
+          if(command!=="STOP"&&!currentState(deviceId).online){
+            await recordEvent(deviceId,"command_rejected",{command,user:user.username,value:d.value??null,reason:"DEVICE_OFFLINE"});
+            return err("Device offline",409);
+          }
           const id=randomUUID(),time=now();
           await q("INSERT INTO commands(command_id,device_id,user_id,command,value,status,created_at) VALUES($1,$2,$3,$4,$5,'PENDING',$6)",
             [id,deviceId,user.id,command,["SET_PWM","SET_SAMPLE_INTERVAL"].includes(command)?d.value:null,time]);
@@ -473,9 +555,10 @@ Bun.serve({
               {qos:1,retain:false},e=>e?reject(e):resolve()));
           }catch(e){
             await q("UPDATE commands SET status='FAILED' WHERE command_id=$1",[id]);
+            await recordEvent(deviceId,"command_failed",{command_id:id,command,user:user.username,value:d.value??null,reason:"MQTT_PUBLISH_FAILED"});
             return err("Unable to publish command",503);
           }
-          await recordEvent(deviceId,"command_sent",{command_id:id,command,user:user.username});
+          await recordEvent(deviceId,"command_sent",{command_id:id,command,value:d.value??null,user:user.username});
           return json({command_id:id,status:"PENDING"},202);
         }
       }

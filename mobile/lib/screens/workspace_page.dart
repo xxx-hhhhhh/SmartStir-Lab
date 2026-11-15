@@ -35,7 +35,11 @@ class _WorkspacePageState extends State<WorkspacePage> {
   DateTime _clock=DateTime.now();
   bool _loadingRuns=false;
   String? _exportingRunId;
-  double _pwm=30;
+  double _pwm=30.0;
+  bool _pwmEdited=false;
+  final TextEditingController _pwmInput=TextEditingController(text:'30.0');
+  bool _followLatestRun=true;
+  bool _exportingEvents=false;
   String? _error;
   String _action='';
   DateTime? _lastSeen;
@@ -43,7 +47,7 @@ class _WorkspacePageState extends State<WorkspacePage> {
 
   @override
   void initState(){
-    super.initState();_refresh();
+    super.initState();AppPrefs.language.addListener(_languageChanged);_refresh();
     _timer=Timer.periodic(const Duration(seconds:1),(_){
       if(!mounted)return;
       final tick=++_tick;
@@ -51,12 +55,24 @@ class _WorkspacePageState extends State<WorkspacePage> {
       if(_tab==0)_refresh();
       if(_tab==1){
         _refreshSamples();
-        if(tick%3==0)_refreshRuns();
+        if(tick%3==0){_refreshRuns();_refresh();}
       }
+      if(_tab==2&&tick%3==0)_refreshEvents();
     });
   }
+  void _languageChanged(){
+    if(!mounted)return;
+    setState((){});
+    if(_tab==2)_refreshEvents();
+  }
   @override
-  void dispose(){_timer?.cancel();widget.api.close();super.dispose();}
+  void dispose(){
+    AppPrefs.language.removeListener(_languageChanged);
+    _pwmInput.dispose();
+    _timer?.cancel();
+    widget.api.close();
+    super.dispose();
+  }
 
   Future<void> _refresh() async {
     if(_refreshing)return;
@@ -64,7 +80,14 @@ class _WorkspacePageState extends State<WorkspacePage> {
     try{
       final result=await widget.api.device();
       if(!mounted)return;
-      setState(()=>_device=result);
+      setState((){
+        _device=result;
+        if(!_pwmEdited && result['pwm_percent'] is num) {
+          _pwm=((result['pwm_percent'] as num).toDouble()*10).round()/10.0;
+          _pwm=_pwm.clamp(0.0,100.0);
+          _pwmInput.text=_pwm.toStringAsFixed(1);
+        }
+      });
       _lastSeen=DateTime.now();
       _error=null;
     }catch(e){if(mounted)setState(()=>_error=e.toString());}
@@ -88,8 +111,15 @@ class _WorkspacePageState extends State<WorkspacePage> {
         final previous=_selectedRunId;
         setState((){
           _runs=records;
-          if(previous==null&&records.isNotEmpty){
-            _selectedRunId=records.first['id'].toString();
+          if(records.isNotEmpty &&
+             (_followLatestRun || previous==null ||
+              !records.any((r)=>r['id'].toString()==previous))){
+            final latest=records.first['id'].toString();
+            if(latest!=_selectedRunId){
+              _selectedRunId=latest;
+              _samples=[];
+              _sampleError=null;
+            }
           }
         });
         await _refreshSamples();
@@ -124,13 +154,40 @@ class _WorkspacePageState extends State<WorkspacePage> {
   }
 
   Future<void> _reviewRun(String id) async {
-    if(_selectedRunId==id)return;
+    if(_selectedRunId==id&&!_followLatestRun)return;
     setState((){
+      _followLatestRun=false;
       _selectedRunId=id;
       _samples=[];
       _sampleError=null;
     });
     await _refreshSamples();
+  }
+
+  Future<void> _followLatest() async {
+    setState(()=>_followLatestRun=true);
+    await _refreshRuns();
+  }
+
+  void _changePwm(double value) {
+    final rounded=(value.clamp(0.0,100.0)*10).round()/10.0;
+    setState((){_pwm=rounded;_pwmEdited=true;});
+    final label=rounded.toStringAsFixed(1);
+    _pwmInput.value=TextEditingValue(text:label,
+      selection:TextSelection.collapsed(offset:label.length));
+  }
+
+  Future<void> _applyPwm() async {
+    final text=_pwmInput.text.trim().replaceAll(',', '.');
+    final valid=RegExp(r'^(?:100(?:\.0)?|(?:\d|[1-9]\d)(?:\.\d)?)$').hasMatch(text);
+    final value=valid?double.tryParse(text):null;
+    if(value==null||value<0||value>100){
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content:Text(L.t('pwm_invalid'))));
+      return;
+    }
+    _changePwm(value);
+    await _send('SET_PWM',_pwm);
   }
   Future<void> _exportRun(String runId) async {
     if(_exportingRunId!=null)return;
@@ -219,8 +276,8 @@ class _WorkspacePageState extends State<WorkspacePage> {
                    '${dt.hour.toString().padLeft(2,'0')}:${dt.minute.toString().padLeft(2,'0')}:${dt.second.toString().padLeft(2,'0')}';
                 return DataRow(cells:[
                   DataCell(Text(stamp)),
-                  DataCell(Text(sample['pwm_percent']==null?'—':
-                    '${sample['pwm_percent']}%')),
+                  DataCell(Text(sample['pwm_percent'] is num
+                    ?'${(sample['pwm_percent'] as num).toStringAsFixed(1)}%':'—')),
                   DataCell(Text(sample['actual_rpm']==null?'—':
                     sample['actual_rpm'].toString())),
                   DataCell(Text(L.t(sample['motor_enabled']==true?'running':'stopped'))),
@@ -229,6 +286,15 @@ class _WorkspacePageState extends State<WorkspacePage> {
             )),
         ]))),
       const SizedBox(height:14),
+      if(!_followLatestRun&&_runs.isNotEmpty)Align(
+        alignment:Alignment.centerRight,
+        child:TextButton.icon(onPressed:_followLatest,
+          icon:const Icon(Icons.fiber_manual_record),
+          label:Text(L.t('follow_latest')))),
+      if(_device?['online']==true&&_device?['motor_enabled']==true&&
+         !_runs.any((run)=>run['ended_at']==null))
+        Card(child:Padding(padding:const EdgeInsets.all(12),
+          child:Text(L.t('record_waiting_telemetry')))),
       if(_loadingRuns)const LinearProgressIndicator(),
       if(_runs.isEmpty&&!_loadingRuns)Card(child:Padding(
         padding:const EdgeInsets.all(24),
@@ -275,7 +341,7 @@ class _WorkspacePageState extends State<WorkspacePage> {
     ]),
   );
 
-  Future<void> _send(String command,[int? value]) async {
+  Future<void> _send(String command,[num? value]) async {
     if(_busy&&command!='STOP')return;
     if(command=='STOP'&&_stopPending)return;
     if(command=='START'&&AppPrefs.confirmStart.value){
@@ -314,7 +380,11 @@ class _WorkspacePageState extends State<WorkspacePage> {
         }
       }
       if(mounted&&generation==_generation){
-        setState(()=>_action='$command: $status${detail.isEmpty?'':' ($detail)'}');
+        final verb=command=='SET_PWM'?L.t('set_pwm'):command=='SET_SAMPLE_INTERVAL'
+            ?L.t('sample_interval'):command=='START'?L.t('start'):L.t('stop');
+        final reasonKey='err_${detail.toLowerCase()}';
+        final reason=L.t(reasonKey)==reasonKey?L.t('err_generic'):L.t(reasonKey);
+        setState(()=>_action='$verb: ${L.t('ack_${status.toLowerCase()}')}${detail.isEmpty?'':' ($reason)'}');
       }
       await _refresh();
     }catch(e){
@@ -430,21 +500,57 @@ class _WorkspacePageState extends State<WorkspacePage> {
             Row(children:[
               Expanded(child:Text(L.t('pwm'),
                 style:const TextStyle(fontWeight:FontWeight.w700))),
-              Text('${_pwm.round()}%',style:const TextStyle(
+              Text('${_pwm.toStringAsFixed(1)}%',style:const TextStyle(
                 fontSize:22,fontWeight:FontWeight.w800)),
             ]),
-            Slider(value:_pwm,min:0,max:100,divisions:20,
-              onChanged:_busy?null:(v)=>setState(()=>_pwm=v)),
+            Slider(value:_pwm,min:0,max:100,divisions:1000,
+              label:'${_pwm.toStringAsFixed(1)}%',
+              onChanged:_busy?null:_changePwm),
             Row(mainAxisAlignment:MainAxisAlignment.spaceBetween,children:[
               const Text('0%'),const Text('100%'),
             ]),
+            const SizedBox(height:12),
+            Row(children:[
+              IconButton.outlined(
+                tooltip:L.t('pwm_decrease'),
+                onPressed:_busy?null:()=>_changePwm(_pwm-0.1),
+                icon:const Icon(Icons.remove)),
+              const SizedBox(width:8),
+              Expanded(child:TextField(
+                controller:_pwmInput,
+                enabled:!_busy,
+                keyboardType:const TextInputType.numberWithOptions(decimal:true),
+                textInputAction:TextInputAction.done,
+                decoration:InputDecoration(labelText:L.t('pwm_input'),
+                  suffixText:'%',isDense:true),
+                onChanged:(raw){
+                  final v=double.tryParse(raw.trim().replaceAll(',','.'));
+                  setState((){
+                    _pwmEdited=true;
+                    if(v!=null&&v>=0&&v<=100&&
+                       ((v*10)-(v*10).round()).abs()<0.000001) {
+                      _pwm=(v*10).round()/10.0;
+                    }
+                  });
+                },
+                onSubmitted:(_){if(canOperate)_applyPwm();},
+              )),
+              const SizedBox(width:8),
+              IconButton.outlined(
+                tooltip:L.t('pwm_increase'),
+                onPressed:_busy?null:()=>_changePwm(_pwm+0.1),
+                icon:const Icon(Icons.add)),
+            ]),
+            const SizedBox(height:6),
+            Text(L.t('pwm_apply_hint'),style:const TextStyle(
+              fontSize:12,color:Color(0xFF64748B))),
             const SizedBox(height:10),
             OutlinedButton.icon(
-              onPressed:canOperate?()=>_send('SET_PWM',_pwm.round()):null,
+              onPressed:canOperate?_applyPwm:null,
               icon:const Icon(Icons.tune),label:Text(L.t('set_pwm'))),
             const SizedBox(height:12),
             FilledButton.icon(
-              onPressed:canOperate&&_pwm>0?()=>_send('START'):null,
+              onPressed:canOperate&&(_device?['pwm_percent'] is num)&&(_device!['pwm_percent'] as num)>0?()=>_send('START'):null,
               icon:const Icon(Icons.play_arrow),label:Text(L.t('start')),
               style:FilledButton.styleFrom(minimumSize:const Size.fromHeight(48))),
             const SizedBox(height:9),
@@ -472,21 +578,57 @@ class _WorkspacePageState extends State<WorkspacePage> {
         color:Color(0xFF1B365D),fontWeight:FontWeight.w800,fontSize:19)),
     ]);
 
+  Future<void> _exportEvents() async {
+    if(_exportingEvents)return;
+    setState(()=>_exportingEvents=true);
+    try {
+      final bytes=await widget.api.eventsCsv();
+      if(!mounted)return;
+      final fileName='SmartStir-${widget.api.deviceId}-events.csv';
+      await SharePlus.instance.share(ShareParams(
+        files:[XFile.fromData(Uint8List.fromList(bytes),mimeType:'text/csv')],
+        fileNameOverrides:[fileName],title:L.t('export_events'),
+      ));
+    } catch(e) {
+      if(mounted){
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content:Text('${L.t('export_failed')}: $e')));
+      }
+    } finally {
+      if(mounted)setState(()=>_exportingEvents=false);
+    }
+  }
+
   Widget _eventsTab()=>RefreshIndicator(onRefresh:_refreshEvents,child:ListView(
     padding:const EdgeInsets.all(20),children:[
-      Text(L.t('events'),style:Theme.of(context).textTheme.headlineSmall),
+      Row(children:[
+        Expanded(child:Text(L.t('events'),
+          style:Theme.of(context).textTheme.headlineSmall)),
+        OutlinedButton.icon(
+          onPressed:_exportingEvents?null:_exportEvents,
+          icon:_exportingEvents?const SizedBox(width:16,height:16,
+            child:CircularProgressIndicator(strokeWidth:2))
+            :const Icon(Icons.file_download_outlined),
+          label:Text(L.t('export_events')),
+        ),
+      ]),
+      const SizedBox(height:8),
+      Text(L.t('event_log_hint'),style:const TextStyle(
+        color:Color(0xFF64748B),fontSize:12)),
       const SizedBox(height:12),
       if(_events.isEmpty)Card(child:Padding(padding:const EdgeInsets.all(24),
         child:Text(L.t('no_events')))),
       ..._events.map((e){
         final unix=e['created_at'];
         final date=unix is int?DateTime.fromMillisecondsSinceEpoch(unix*1000).toLocal():null;
-        final detail=e['data_json']?.toString()??'';
+        final summary=(e['summary']??L.t('event_unknown')).toString();
+        final operator=e['operator']?.toString()??L.t('device_actor');
+        final timestamp=date?.toString().split('.').first??'—';
         return Card(child:ListTile(
           leading:const Icon(Icons.event_note_outlined),
-          title:Text((e['kind']??'').toString()),
-          subtitle:Text('${date?.toString().split('.').first??'—'}\n$detail',
-            maxLines:4,overflow:TextOverflow.ellipsis),
+          title:Text(summary),
+          subtitle:Text('${L.t('event_operator')}: $operator\n${L.t('event_time')}: $timestamp'),
+          isThreeLine:true,
         ));
       }),
     ],

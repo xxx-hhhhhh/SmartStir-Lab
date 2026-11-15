@@ -40,8 +40,15 @@ class _LoginPageState extends State<LoginPage> {
     }
   }
 
+  void _languageChanged(){if(mounted)setState((){});}
+  @override
+  void initState(){
+    super.initState();
+    AppPrefs.language.addListener(_languageChanged);
+  }
   @override
   void dispose() {
+    AppPrefs.language.removeListener(_languageChanged);
     _server.dispose(); _username.dispose(); _password.dispose(); _confirmation.dispose();
     super.dispose();
   }
@@ -58,7 +65,7 @@ class _LoginPageState extends State<LoginPage> {
           Text(L.t('app'),textAlign:TextAlign.center,
             style:const TextStyle(fontSize:30,fontWeight:FontWeight.w800,color:Color(0xFF1B365D))),
           const SizedBox(height: 5),
-          Text('${L.t('subtitle')} · V1.3.3',
+          Text('${L.t('subtitle')} · V1.3.4',
             textAlign: TextAlign.center,style: const TextStyle(color:Color(0xFF64748B))),
           const SizedBox(height: 24),
           Card(child: Padding(padding:const EdgeInsets.all(20),child:Column(

@@ -1,8 +1,8 @@
 /*
- * SmartStir Lab ESP32 firmware v1.3.0
+ * SmartStir Lab ESP32 firmware v1.3.4
  * Adapted from the user's legacy TB6612 + Blinker + Hall + OLED sketch.
  *
- * Preserved: STBY=4, AIN1=5, AIN2=18, PWMA=19, 20kHz/8-bit PWM;
+ * Preserved: STBY=4, AIN1=5, AIN2=18, PWMA=19, 20kHz/10-bit PWM;
  *            optional Hall GPIO27 (1 pulse/rev) and OLED I2C SDA21/SCL22 (0x3C).
  * Replaced: Blinker -> secure MQTT via EMQX Cloud (per-device MQTT identity).
  * Not used: GPIO32. No relay required.
@@ -61,8 +61,8 @@ void IRAM_ATTR hallSensorISR() {
 #define PWMA 19
 #define PWM_CHANNEL 0
 #define PWM_FREQ 20000
-#define PWM_RES 8
-#define PWM_MAX 255
+#define PWM_RES 10
+#define PWM_MAX 1023
 
 #if __has_include(<esp_arduino_version.h>)
 #include <esp_arduino_version.h>
@@ -96,7 +96,7 @@ const unsigned long MQTT_RETRY_INTERVAL_MS = 8000UL;
 WiFiClientSecure tlsClient;
 PubSubClient mqtt(tlsClient);
 bool motorEnabled = false;
-uint8_t pwmPercent = 0;            // Safe: preset starts at 0%; old sketch used 50%
+uint16_t pwmTenths = 0;             // Fixed-point 0.1% units; boot preset is safely OFF.
 unsigned long runStartMs = 0;
 unsigned long lastReportMs = 0;
 unsigned long lastWiFiAttemptMs = 0;
@@ -117,7 +117,7 @@ void cacheCommand(const String &id) {
   cacheCursor = (cacheCursor + 1) % 16;
 }
 
-void setPwmRaw(uint8_t duty) {
+void setPwmRaw(uint16_t duty) {
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
   ledcWrite(PWMA, duty);
 #else
@@ -137,7 +137,7 @@ void motorStop() {
 void motorStart() {
   digitalWrite(AIN1, HIGH);
   digitalWrite(AIN2, LOW);
-  setPwmRaw((uint8_t)((uint16_t)pwmPercent * PWM_MAX / 100));
+  setPwmRaw((uint16_t)(((uint32_t)pwmTenths * PWM_MAX + 500) / 1000));
   digitalWrite(STBY, HIGH);
   if (!motorEnabled) runStartMs = millis(); // Repeated START cannot extend timeout.
   motorEnabled = true;
@@ -152,7 +152,7 @@ void calculateRpm() {
   uint32_t pulses = hallPulseCount;
   hallPulseCount = 0;
   interrupts();
-  if (!motorEnabled || pwmPercent == 0) {
+  if (!motorEnabled || pwmTenths == 0) {
     actualRpm = 0.0f;
   } else {
     actualRpm = (float)pulses * 60000.0f /
@@ -182,7 +182,7 @@ void refreshOled() {
   display.println(motorEnabled ? "RUNNING" : "STOPPED");
   display.setCursor(0, 31);
   display.print("PWM: ");
-  display.print(pwmPercent);
+  display.print(pwmTenths / 10.0f, 1);
   display.println("%");
   display.setCursor(0, 45);
   display.print("RPM: ");
@@ -208,7 +208,7 @@ void publishState() {
   JsonDocument doc;
   doc["device_id"] = DEVICE_ID;
   doc["motor_enabled"] = motorEnabled;
-  doc["pwm_percent"] = pwmPercent;
+  doc["pwm_percent"] = pwmTenths / 10.0f;
   // Existing gateway expects armed. This is a LEGACY compatibility flag,
   // not a real safety-interlock switch or on-site permission.
   doc["armed"] = true;
@@ -249,7 +249,7 @@ void publishAck(const char *id, const char *status, const char *error = nullptr)
   JsonDocument doc;
   doc["command_id"] = id;
   doc["status"] = status;
-  doc["applied_pwm_percent"] = pwmPercent;
+  doc["applied_pwm_percent"] = pwmTenths / 10.0f;
   doc["motor_enabled"] = motorEnabled;
   doc["sample_interval_ms"] = reportIntervalMs;
   if (error) doc["error_code"] = error;
@@ -291,21 +291,28 @@ void handleMqtt(char* topic, byte* payload, unsigned int length) {
   cacheCommand(id);
 
   if (command == "SET_PWM") {
-    if (!doc["value"].is<int>()) {
+    JsonVariantConst requested = doc["value"];
+    if (!(requested.is<int>() || requested.is<long>() ||
+          requested.is<float>() || requested.is<double>())) {
       publishAck(id.c_str(), "REJECTED", "INVALID_VALUE");
       return;
     }
-    int value = doc["value"].as<int>();
-    if (value < 0 || value > 100) {
+    const double value = requested.as<double>();
+    if (!isfinite(value) || value < 0.0 || value > 100.0) {
       publishAck(id.c_str(), "REJECTED", "OUT_OF_RANGE");
       return;
     }
-    pwmPercent = (uint8_t)value;
-    if (value == 0) motorStop();
-    else if (motorEnabled) setPwmRaw((uint8_t)((uint16_t)value * PWM_MAX / 100));
+    const int tenths = (int)round(value * 10.0);
+    if (fabs(value * 10.0 - tenths) > 0.001) {
+      publishAck(id.c_str(), "REJECTED", "INVALID_PRECISION");
+      return;
+    }
+    pwmTenths = (uint16_t)tenths;
+    if (pwmTenths == 0) motorStop();
+    else if (motorEnabled) setPwmRaw((uint16_t)(((uint32_t)pwmTenths * PWM_MAX + 500) / 1000));
     publishAck(id.c_str(), "APPLIED");
     publishState();
-    Serial.printf("MQTT command: SET_PWM %u%%\n", pwmPercent);
+    Serial.printf("MQTT command: SET_PWM %.1f%%\n", pwmTenths / 10.0f);
   } else if (command == "SET_SAMPLE_INTERVAL") {
     if (!doc["value"].is<int>()) {
       publishAck(id.c_str(), "REJECTED", "INVALID_INTERVAL");
@@ -331,14 +338,14 @@ void handleMqtt(char* topic, byte* payload, unsigned int length) {
     publishState();
     Serial.printf("MQTT command: SET_SAMPLE_INTERVAL %ds\n", valueSeconds);
   } else if (command == "START") {
-    if (pwmPercent == 0 || !mqtt.connected() || WiFi.status() != WL_CONNECTED) {
+    if (pwmTenths == 0 || !mqtt.connected() || WiFi.status() != WL_CONNECTED) {
       publishAck(id.c_str(), "REJECTED", "PWM_ZERO_OR_NOT_CONNECTED");
       return;
     }
     motorStart();
     publishAck(id.c_str(), "APPLIED");
     publishState();
-    Serial.printf("MQTT command: START at PWM %u%%\n", pwmPercent);
+    Serial.printf("MQTT command: START at PWM %.1f%%\n", pwmTenths / 10.0f);
   } else {
     publishAck(id.c_str(), "REJECTED", "UNKNOWN_COMMAND");
   }
