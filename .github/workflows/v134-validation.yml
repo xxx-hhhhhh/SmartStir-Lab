@@ -86,6 +86,9 @@ jobs:
           assert orig in s, "Generated application ID changed; avoid overwriting stable app"
           gradle.write_text(s.replace(orig,'applicationId = "com.smartstir.smartstir_lab.v134preview"',1))
           PY
+      - name: Remove generated template widget test
+        working-directory: mobile
+        run: rm -f test/widget_test.dart
       - name: Flutter dependencies
         working-directory: mobile
         run: flutter pub get
