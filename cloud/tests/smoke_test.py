@@ -72,6 +72,27 @@ assert len(csv_rows) == 3 and csv_rows[1][3] == "10.1", csv_rows
 assert csv_rows[2][5].startswith("'=HYPERLINK"), "CSV formula not escaped"
 check(404, req(device_path + "/runs/" + run_id + ".csv", token=bob))
 
+# Decimal values must pass command validation, while finer precision is rejected.
+check(422, req(device_path + "/commands", "POST",
+               {"command":"SET_PWM","value":10.11}, token=alice))
+check(503, req(device_path + "/commands", "POST",
+               {"command":"SET_PWM","value":10.1}, token=alice))
+
+status, events = req(device_path + "/events?lang=zh", token=alice)
+check(200, (status, events))
+assert any("调整 PWM 10.1%" in row["summary"] for row in events), events
+check(404, req(device_path + "/events?lang=zh", token=bob))
+audit_request = urllib.request.Request(
+    BASE + device_path + "/events.csv?lang=zh",
+    headers={"Authorization": "Bearer " + alice})
+with urllib.request.urlopen(audit_request, timeout=10) as response:
+    audit_bytes = response.read()
+assert audit_bytes[:3] == bytes([239, 187, 191])
+audit_rows = list(csv.reader(io.StringIO(audit_bytes.decode("utf-8-sig"))))
+assert audit_rows[0][:4] == ["timestamp_utc","operator","event_kind","action"]
+assert any("调整 PWM 10.1%" in row[6] for row in audit_rows[1:]), audit_rows
+
+
 status, other = req("/api/v1/labs", token=bob)
 assert not other, other
 check(404, req(f"/api/v1/labs/{lab_id}/invitations", "POST",
